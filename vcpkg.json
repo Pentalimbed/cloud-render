@@ -1,0 +1,20 @@
+{
+  "name": "cloud-render",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "openvdb",
+      "features": [
+        "nanovdb"
+      ]
+    },
+    "glfw3",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "dx11-binding"
+      ]
+    }
+  ]
+}

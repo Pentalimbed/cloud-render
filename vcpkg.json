@@ -16,5 +16,6 @@
         "dx11-binding"
       ]
     }
-  ]
+  ],
+  "builtin-baseline": "495848814af4cc2760e70f7440c2dbe66d3ff196"
 }

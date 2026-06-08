@@ -216,6 +216,7 @@ struct Volume {
     Vec3 nativeWorldMax;
     Vec3 worldMin;
     Vec3 worldMax;
+    float maxDensity = 0.0f;
     int nativeUpAxis = 2;
     std::string gridName;
 };
@@ -309,6 +310,20 @@ Bounds activeWorldBounds(const openvdb::FloatGrid& grid, const openvdb::CoordBBo
     return bounds;
 }
 
+float maxActiveDensity(const openvdb::FloatGrid& grid)
+{
+    bool hasValue = false;
+    float maxDensity = 0.0f;
+    for (openvdb::FloatGrid::ValueOnCIter iter = grid.cbeginValueOn(); iter; ++iter) {
+        const float density = iter.getValue();
+        if (!hasValue || density > maxDensity) {
+            maxDensity = density;
+            hasValue = true;
+        }
+    }
+    return hasValue ? maxDensity : 0.0f;
+}
+
 int shortestAxis(Vec3 extent)
 {
     int axis = 0;
@@ -373,6 +388,7 @@ void applyVolumePlacement(openvdb::FloatGrid& grid, Volume& volume, const openvd
     volume.nativeWorldMax = placement.nativeWorldMax;
     volume.worldMin = placement.worldMin;
     volume.worldMax = placement.worldMax;
+    volume.maxDensity = maxActiveDensity(grid);
     volume.nativeUpAxis = placement.nativeUpAxis;
 }
 
@@ -517,7 +533,7 @@ struct RenderSettings {
     Vec3 scattering = {0.65f, 0.70f, 0.78f};
     Vec3 lightDirection = {-0.35f, 0.3f, 0.8f};
     Vec3 lightColor = {5.0f, 4.85f, 4.55f};
-    int phaseFunctionMode = 0;
+    int phaseFunctionMode = 2;
     float anisotropy = 0.15f;
     float draineAlpha = 1.0f;
     float cloudDiameterMicrons = 20.0f;
@@ -1086,6 +1102,10 @@ bool buildUi(RenderSettings& settings, const Volume& volume, float fps, float fr
     bool changed = false;
     ImGui::Begin("Cloud Renderer");
     ImGui::TextUnformatted(volume.gridName.c_str());
+    ImGui::Text("Max density %.6g", volume.maxDensity);
+    controlHint("Maximum active voxel density in the loaded volume before the UI Density multiplier.");
+    ImGui::Text("Scaled max density %.6g", volume.maxDensity * settings.densityMultiplier);
+    controlHint("Maximum active voxel density after the current UI Density multiplier.");
     ImGui::Text("FPS %.1f (%.2f ms)", fps, frameMs);
     ImGui::TextWrapped("Fly: F1 toggles UI, mouse look, WASD move, Q/E down/up, Shift fast");
     ImGui::Separator();
@@ -1118,7 +1138,7 @@ bool buildUi(RenderSettings& settings, const Volume& volume, float fps, float fr
     settings.lightDirection = normalize(settings.lightDirection);
     changed |= controlVec3Color("Light color", settings.lightColor);
     controlHint("HDR directional light radiance.");
-    const char* phaseModes[] = {"Henyey-Greenstein", "Draine", "Jendersie cloud"};
+    const char* phaseModes[] = {"Henyey-Greenstein", "Draine", "Jendersie Mie"};
     changed |= ImGui::Combo("Phase", &settings.phaseFunctionMode, phaseModes, 3);
     controlHint("Controls angular scattering distribution used by lighting and path scattering.");
     if (settings.phaseFunctionMode == 2) {
@@ -1365,14 +1385,14 @@ int main(int argc, char** argv)
 {
     try {
         if (argc > 1 && std::string_view(argv[1]) == "--check") {
-            const std::filesystem::path volumePath = argc > 2 ? std::filesystem::path(argv[2]) : std::filesystem::path("C:\\repos\\personal\\cloud-render\\cabauw.vdb");
+            const std::filesystem::path volumePath = argc > 2 ? std::filesystem::path(argv[2]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
             runCheck(volumePath);
         } else if (argc > 1 && std::string_view(argv[1]) == "--frames") {
             const uint32_t maxFrames = argc > 2 ? static_cast<uint32_t>(std::stoul(argv[2])) : 1u;
-            const std::filesystem::path volumePath = argc > 3 ? std::filesystem::path(argv[3]) : std::filesystem::path("C:\\repos\\personal\\cloud-render\\cabauw.vdb");
+            const std::filesystem::path volumePath = argc > 3 ? std::filesystem::path(argv[3]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
             run(volumePath, maxFrames);
         } else {
-            const std::filesystem::path volumePath = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path("C:\\repos\\personal\\cloud-render\\cabauw.vdb");
+            const std::filesystem::path volumePath = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
             run(volumePath);
         }
         return 0;

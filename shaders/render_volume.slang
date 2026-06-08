@@ -83,6 +83,9 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
 {
     pnanovdb_coord_t coord = ijk;
     pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord);
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    gVolumeSampleCount += 1u;
+#endif
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
 
@@ -106,9 +109,6 @@ float sampleDensityWorld(
     inout pnanovdb_readaccessor_t accessor,
     inout uint rng)
 {
-#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
-    gVolumeSampleCount += 1u;
-#endif
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
     return sampleDensityIndex(indexPosition, accessor, rng) * densityMultiplier;
 }

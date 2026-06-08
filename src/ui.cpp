@@ -90,7 +90,7 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
         actions.settingsChanged |= ImGui::Combo("Path history", &settings.pathHistoryMode, historyModes, 2);
         controlHint("Accumulation averages path-traced samples until the camera or settings change.");
     }
-    actions.settingsChanged |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 200.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    actions.settingsChanged |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 500.0f, "%.3f");
     controlHint("Scales sampled VDB density before absorption and scattering.");
     actions.settingsChanged |= controlVec3Color("Absorption", settings.absorption);
     controlHint("Per-channel extinction that removes light in the medium.");

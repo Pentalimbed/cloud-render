@@ -485,7 +485,6 @@ RenderConstants makeConstants(
     c.lightDirection = normalize(settings.lightDirection);
     c.densityMultiplier = settings.densityMultiplier;
     c.lightColor = settings.lightColor;
-    c.anisotropy = settings.anisotropy;
     c.absorption = settings.absorption;
     c.stepJitter = settings.stepJitter;
     c.scattering = settings.scattering;
@@ -501,12 +500,11 @@ RenderConstants makeConstants(
     c.timeSeconds = timeSeconds;
     c.resetHistory = resetHistory ? 1u : 0u;
     c.pathHistoryMode = static_cast<uint32_t>(std::clamp(settings.pathHistoryMode, 0, 1));
+    const CloudPhaseParameters cloudPhase = makeCloudPhaseParameters(settings.particleDiameterMicrons);
     c.phaseFunctionMode = static_cast<uint32_t>(std::clamp(settings.phaseFunctionMode, 0, 2));
-    c.draineAlpha = std::max(settings.draineAlpha, 0.0f);
-    const CloudPhaseParameters cloudPhase = makeCloudPhaseParameters(settings.cloudDiameterMicrons);
-    c.cloudPhaseGhg = cloudPhase.gHg;
+    c.cloudPhaseGhg = c.phaseFunctionMode == 2u ? cloudPhase.gHg : settings.cloudPhaseGhg;
     c.cloudPhaseGd = cloudPhase.gD;
-    c.cloudPhaseAlpha = cloudPhase.alpha;
+    c.cloudPhaseAlpha = c.phaseFunctionMode == 2u ? cloudPhase.alpha : std::max(settings.cloudPhaseAlpha, 0.0f);
     c.cloudPhaseWeight = cloudPhase.weightD;
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ

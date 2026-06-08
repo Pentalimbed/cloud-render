@@ -7,17 +7,10 @@ static const uint PhaseModeHenyeyGreenstein = 0u;
 static const uint PhaseModeDraine = 1u;
 static const uint PhaseModeJendersieCloud = 2u;
 
-struct CloudPhaseParameters {
-    float gHg;
-    float gD;
-    float alpha;
-    float wD;
-};
-
-float phaseClampG(float g)
-{
-    return clamp(g, -0.999f, 0.999f);
-}
+// float phaseClampG(float g)
+// {
+//     return clamp(g, -0.999f, 0.999f);
+// }
 
 float phaseSqr(float x)
 {
@@ -37,7 +30,7 @@ float3 phaseSafeNormalize(float3 v)
 
 float evalHenyeyGreenstein(float u, float g)
 {
-    float phaseG = phaseClampG(g);
+    float phaseG = g;
     float g2 = phaseG * phaseG;
     float denom = phaseSafeDenom(1.0f + g2 - 2.0f * phaseG * u);
     return PhaseInv4Pi * (1.0f - g2) / (denom * sqrt(denom));
@@ -45,7 +38,7 @@ float evalHenyeyGreenstein(float u, float g)
 
 float sampleHenyeyGreensteinCos(float xi, float g)
 {
-    float phaseG = phaseClampG(g);
+    float phaseG = g;
     if (abs(phaseG) < 1.0e-3f) {
         return 2.0f * xi - 1.0f;
     }
@@ -56,7 +49,7 @@ float sampleHenyeyGreensteinCos(float xi, float g)
 
 float evalDraine(float u, float g, float alpha)
 {
-    float phaseG = phaseClampG(g);
+    float phaseG = g;
     float a = max(alpha, 0.0f);
     float g2 = phaseG * phaseG;
     float denom = phaseSafeDenom(1.0f + g2 - 2.0f * phaseG * u);
@@ -86,7 +79,7 @@ float sampleDraineZeroGCos(float xi, float alpha)
 
 float sampleDraineCos(float xi, float g, float alpha)
 {
-    float phaseG = phaseClampG(g);
+    float phaseG = g;
     float a = max(alpha, 0.0f);
     if (a < 1.0e-5f) {
         return sampleHenyeyGreensteinCos(xi, phaseG);
@@ -128,32 +121,21 @@ float sampleDraineCos(float xi, float g, float alpha)
     return clamp((1.0f + g2 - rootTerm * rootTerm) / (2.0f * phaseG), -1.0f, 1.0f);
 }
 
-CloudPhaseParameters currentCloudPhaseParameters()
-{
-    CloudPhaseParameters params;
-    params.gHg = phaseClampG(cloudPhaseGhg);
-    params.gD = phaseClampG(cloudPhaseGd);
-    params.alpha = max(cloudPhaseAlpha, 0.0f);
-    params.wD = saturate(cloudPhaseWeight);
-    return params;
-}
-
 float evalCloudPhase(float u)
 {
-    CloudPhaseParameters params = currentCloudPhaseParameters();
-    return (1.0f - params.wD) * evalHenyeyGreenstein(u, params.gHg)
-        + params.wD * evalDraine(u, params.gD, params.alpha);
+    return (1.0f - cloudPhaseWeight) * evalHenyeyGreenstein(u, cloudPhaseGhg)
+        + cloudPhaseWeight * evalDraine(u, cloudPhaseGd, cloudPhaseAlpha);
 }
 
 float evalPhase(float u)
 {
     if (phaseFunctionMode == PhaseModeDraine) {
-        return evalDraine(u, anisotropy, draineAlpha);
+        return evalDraine(u, cloudPhaseGhg, cloudPhaseAlpha);
     }
     if (phaseFunctionMode == PhaseModeJendersieCloud) {
         return evalCloudPhase(u);
     }
-    return evalHenyeyGreenstein(u, anisotropy);
+    return evalHenyeyGreenstein(u, cloudPhaseGhg);
 }
 
 void phaseMakeBasis(float3 n, out float3 tangent, out float3 bitangent)
@@ -176,15 +158,14 @@ float3 sampleDirectionFromPhaseCos(float3 incomingDirection, float cosTheta, flo
 
 float3 sampleCloudPhaseDirection(float3 incomingDirection, inout uint rng)
 {
-    CloudPhaseParameters params = currentCloudPhaseParameters();
     float xi = rand01(rng);
     float cosTheta;
 
-    if (xi < params.wD && params.wD > 1.0e-5f) {
-        cosTheta = sampleDraineCos(xi / params.wD, params.gD, params.alpha);
+    if (xi < cloudPhaseWeight && cloudPhaseWeight > 1.0e-5f) {
+        cosTheta = sampleDraineCos(xi / cloudPhaseWeight, cloudPhaseGd, cloudPhaseAlpha);
     } else {
-        float hgWeight = max(1.0f - params.wD, 1.0e-5f);
-        cosTheta = sampleHenyeyGreensteinCos(saturate((xi - params.wD) / hgWeight), params.gHg);
+        float hgWeight = max(1.0f - cloudPhaseWeight, 1.0e-5f);
+        cosTheta = sampleHenyeyGreensteinCos(saturate((xi - cloudPhaseWeight) / hgWeight), cloudPhaseGhg);
     }
 
     return sampleDirectionFromPhaseCos(incomingDirection, cosTheta, rand01(rng));
@@ -194,14 +175,14 @@ float3 samplePhaseDirection(float3 incomingDirection, inout uint rng)
 {
     float cosTheta;
     if (phaseFunctionMode == PhaseModeDraine) {
-        cosTheta = sampleDraineCos(rand01(rng), anisotropy, draineAlpha);
+        cosTheta = sampleDraineCos(rand01(rng), cloudPhaseGhg, cloudPhaseAlpha);
         return sampleDirectionFromPhaseCos(incomingDirection, cosTheta, rand01(rng));
     }
     if (phaseFunctionMode == PhaseModeJendersieCloud) {
         return sampleCloudPhaseDirection(incomingDirection, rng);
     }
 
-    cosTheta = sampleHenyeyGreensteinCos(rand01(rng), anisotropy);
+    cosTheta = sampleHenyeyGreensteinCos(rand01(rng), cloudPhaseGhg);
     return sampleDirectionFromPhaseCos(incomingDirection, cosTheta, rand01(rng));
 }
 

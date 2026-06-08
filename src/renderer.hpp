@@ -42,9 +42,9 @@ struct RenderSettings {
     Vec3 lightDirection = {-0.35f, 0.3f, 0.8f};
     Vec3 lightColor = {5.0f, 4.85f, 4.55f};
     int phaseFunctionMode = 2;
-    float anisotropy = 0.15f;
-    float draineAlpha = 1.0f;
-    float cloudDiameterMicrons = 20.0f;
+    float cloudPhaseGhg = 0.15f;
+    float cloudPhaseAlpha = 1.0f;
+    float particleDiameterMicrons = 20.0f;
     float exposure = 1.0f;
     float temporalBlend = 0.88f;
     float stepJitter = 1.0f;
@@ -76,13 +76,13 @@ struct RenderConstants {
     float densityMultiplier;
 
     Vec3 lightColor;
-    float anisotropy;
+    float exposure;
 
     Vec3 absorption;
     float stepJitter;
 
     Vec3 scattering;
-    float exposure;
+    float densityMajorant;
 
     Vec3 volumeWorldMin;
     float raymarchPrimaryMinStep;
@@ -93,26 +93,23 @@ struct RenderConstants {
     uint32_t pathMaxBounces;
     float fovYRadians;
     float temporalBlend;
-    float densityMajorant;
+    float raymarchPrimaryStepScale;
 
     float timeSeconds;
     uint32_t resetHistory;
     uint32_t pathHistoryMode;
     uint32_t phaseFunctionMode;
 
-    float draineAlpha;
     float cloudPhaseGhg;
     float cloudPhaseGd;
     float cloudPhaseAlpha;
-
     float cloudPhaseWeight;
-    float raymarchPrimaryStepScale;
+
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
     float debugSampleCountScale;
-#else
-    float _phasePad0;
-    float _phasePad1;
+    float _debugPad0;
+    float _debugPad1;
 #endif
 };
 

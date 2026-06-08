@@ -105,13 +105,13 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     actions.settingsChanged |= ImGui::Combo("Phase", &settings.phaseFunctionMode, phaseModes, 3);
     controlHint("Controls angular scattering distribution used by lighting and path scattering.");
     if (settings.phaseFunctionMode == 2) {
-        actions.settingsChanged |= ImGui::SliderFloat("Cloud diameter (um)", &settings.cloudDiameterMicrons, 0.001f, 50.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        actions.settingsChanged |= ImGui::SliderFloat("Particle diameter (um)", &settings.particleDiameterMicrons, 0.001f, 50.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         controlHint("Particle diameter for the CPU-evaluated Jendersie cloud phase approximation.");
     } else {
-        actions.settingsChanged |= ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.95f, 0.95f, "%.2f");
+        actions.settingsChanged |= ImGui::SliderFloat("Anisotropy", &settings.cloudPhaseGhg, -0.95f, 0.95f, "%.2f");
         controlHint("Phase asymmetry parameter: positive values favor forward scattering.");
         if (settings.phaseFunctionMode == 1) {
-            actions.settingsChanged |= ImGui::SliderFloat("Draine alpha", &settings.draineAlpha, 0.0f, 250.0f, "%.3f");
+            actions.settingsChanged |= ImGui::SliderFloat("Draine alpha", &settings.cloudPhaseAlpha, 0.0f, 250.0f, "%.3f");
             controlHint("Draine alpha shape parameter; 1 matches Cornette-Shanks.");
         }
     }

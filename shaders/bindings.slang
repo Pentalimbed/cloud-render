@@ -29,7 +29,7 @@ cbuffer RenderConstants : register(b0)
     float exposure;
 
     float3 volumeWorldMin;
-    uint raymarchPrimarySteps;
+    float raymarchPrimaryMinStep;
 
     float3 volumeWorldMax;
     uint raymarchShadowSteps;
@@ -50,6 +50,7 @@ cbuffer RenderConstants : register(b0)
     float cloudPhaseAlpha;
 
     float cloudPhaseWeight;
+    float raymarchPrimaryStepScale;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
     float debugSampleCountScale;
@@ -57,7 +58,6 @@ cbuffer RenderConstants : register(b0)
     float phasePad0;
     float phasePad1;
 #endif
-    float phasePad2;
 }
 
 StructuredBuffer<uint> gNanoVdb : register(t0);

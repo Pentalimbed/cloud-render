@@ -489,9 +489,10 @@ struct RenderSettings {
     float stepJitter = 1.0f;
     float densityMajorant = 1.0f;
     int pathHistoryMode = 0;
-    int raymarchPrimarySteps = 160;
-    int raymarchShadowSteps = 48;
-    int pathMaxBounces = 4;
+    float raymarchPrimaryMinStep = 1.0f;
+    float raymarchPrimaryStepScale = 0.3f;
+    int raymarchShadowSteps = 16;
+    int pathMaxBounces = 8;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     float debugSampleCountScale = 256.0f;
 #endif
@@ -567,7 +568,7 @@ struct RenderConstants {
     float exposure;
 
     Vec3 volumeWorldMin;
-    uint32_t raymarchPrimarySteps;
+    float raymarchPrimaryMinStep;
 
     Vec3 volumeWorldMax;
     uint32_t raymarchShadowSteps;
@@ -588,6 +589,7 @@ struct RenderConstants {
     float cloudPhaseAlpha;
 
     float cloudPhaseWeight;
+    float raymarchPrimaryStepScale;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
     float debugSampleCountScale;
@@ -595,7 +597,6 @@ struct RenderConstants {
     float _phasePad0;
     float _phasePad1;
 #endif
-    float _phasePad2;
 };
 
 static_assert(sizeof(RenderConstants) % 16 == 0);
@@ -1101,8 +1102,10 @@ bool buildUi(RenderSettings& settings, const Volume& volume, float fps, float fr
     if (settings.rendererMode == 0) {
         changed |= ImGui::SliderFloat("Step jitter", &settings.stepJitter, 0.0f, 1.0f, "%.2f");
         controlHint("Randomizes raymarch step positions to reduce banding.");
-        changed |= ImGui::SliderInt("Primary ray steps", &settings.raymarchPrimarySteps, 8, 1024);
-        controlHint("Ray marcher primary integration steps.");
+        changed |= ImGui::SliderFloat("Primary min step", &settings.raymarchPrimaryMinStep, 0.01f, 10.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        controlHint("Minimum world-space step length for primary ray marching.");
+        changed |= ImGui::SliderFloat("Primary distance scale", &settings.raymarchPrimaryStepScale, 0.0f, 1.0f, "%.3f");
+        controlHint("Scales sqrt(distance from camera) for adaptive primary ray steps.");
         changed |= ImGui::SliderInt("Shadow ray steps", &settings.raymarchShadowSteps, 4, 256);
         controlHint("Ray marcher light transmittance steps.");
     } else {
@@ -1144,7 +1147,7 @@ RenderConstants makeConstants(
     c.scattering = settings.scattering;
     c.exposure = settings.exposure;
     c.volumeWorldMin = volume.worldMin;
-    c.raymarchPrimarySteps = static_cast<uint32_t>(std::max(1, settings.raymarchPrimarySteps));
+    c.raymarchPrimaryMinStep = std::max(settings.raymarchPrimaryMinStep, 0.001f);
     c.volumeWorldMax = volume.worldMax;
     c.raymarchShadowSteps = static_cast<uint32_t>(std::max(1, settings.raymarchShadowSteps));
     c.pathMaxBounces = static_cast<uint32_t>(std::max(1, settings.pathMaxBounces));
@@ -1161,6 +1164,7 @@ RenderConstants makeConstants(
     c.cloudPhaseGd = cloudPhase.gD;
     c.cloudPhaseAlpha = cloudPhase.alpha;
     c.cloudPhaseWeight = cloudPhase.weightD;
+    c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 1));
     c.debugSampleCountScale = std::max(settings.debugSampleCountScale, 1.0f);

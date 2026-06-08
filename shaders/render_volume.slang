@@ -137,6 +137,14 @@ float3 sampleCountDebugColor()
 }
 #endif
 
+float primaryRayStepLength(float3 worldPosition)
+{
+    float distanceFromCamera = length(worldPosition - cameraPosition);
+    float minStep = max(raymarchPrimaryMinStep, 0.001f);
+    float distanceScale = max(raymarchPrimaryStepScale, 0.0f);
+    return max(minStep, sqrt(distanceFromCamera) * distanceScale);
+}
+
 float3 estimateLightTransmittance(
     float3 worldPosition,
     pnanovdb_grid_handle_t grid,
@@ -184,10 +192,8 @@ float3 renderRaymarchSample(
     }
 
     t0 = max(t0, 0.0f);
-    uint steps = max(1u, raymarchPrimarySteps);
-    float dt = max((t1 - t0) / float(steps), 0.001f);
     float jitter = lerp(0.5f, rand01(rng), saturate(stepJitter));
-    float t = t0 + dt * jitter;
+    float t = t0 + primaryRayStepLength(rayOrigin + rayDirection * t0) * jitter;
 
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
@@ -196,8 +202,13 @@ float3 renderRaymarchSample(
     pnanovdb_readaccessor_init(accessor, root);
 
     [loop]
-    for (uint i = 0u; i < steps && t < t1; ++i) {
+    for (uint i = 0u; i < 65535u && t < t1; ++i) {
         float3 position = rayOrigin + rayDirection * t;
+        float dt = min(primaryRayStepLength(position), t1 - t);
+        if (dt <= 0.0f) {
+            break;
+        }
+
         float density = sampleDensityWorld(position, grid, accessor, rng);
         if (density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));

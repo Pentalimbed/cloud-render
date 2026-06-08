@@ -30,6 +30,10 @@
 #include <utility>
 #include <vector>
 
+#ifndef CLOUD_RENDER_ENABLE_DEBUG_VIZ
+#define CLOUD_RENDER_ENABLE_DEBUG_VIZ 0
+#endif
+
 #include <nanovdb/NanoVDB.h>
 #include <nanovdb/io/IO.h>
 #include <nanovdb/tools/CreateNanoGrid.h>
@@ -468,6 +472,9 @@ Camera makeInitialCamera(Vec3 worldMin, Vec3 worldMax)
 
 struct RenderSettings {
     int rendererMode = 0;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    int debugViewMode = 0;
+#endif
     float densityMultiplier = 1.0f;
     Vec3 absorption = {0.08f, 0.08f, 0.08f};
     Vec3 scattering = {0.65f, 0.70f, 0.78f};
@@ -485,6 +492,9 @@ struct RenderSettings {
     int raymarchPrimarySteps = 160;
     int raymarchShadowSteps = 48;
     int pathMaxBounces = 4;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    float debugSampleCountScale = 256.0f;
+#endif
 };
 
 struct CloudPhaseParameters {
@@ -578,8 +588,13 @@ struct RenderConstants {
     float cloudPhaseAlpha;
 
     float cloudPhaseWeight;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    uint32_t debugViewMode;
+    float debugSampleCountScale;
+#else
     float _phasePad0;
     float _phasePad1;
+#endif
     float _phasePad2;
 };
 
@@ -702,7 +717,7 @@ ComPtr<ID3DBlob> compileShaderBytecode(const std::filesystem::path& path, const 
     ComPtr<ID3DBlob> bytecode;
     ComPtr<ID3DBlob> errors;
 
-    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_SKIP_OPTIMIZATION;
+    UINT flags = D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3;
 #if defined(_DEBUG)
     flags |= D3DCOMPILE_DEBUG;
 #endif
@@ -1040,6 +1055,15 @@ bool buildUi(RenderSettings& settings, const Volume& volume, float fps, float fr
     const char* modes[] = {"Ray marching", "Path tracer"};
     changed |= ImGui::Combo("Renderer", &settings.rendererMode, modes, 2);
     controlHint("Selects the primary volume integrator.");
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    const char* debugViews[] = {"Off", "Volume sample count"};
+    changed |= ImGui::Combo("Debug view", &settings.debugViewMode, debugViews, 2);
+    controlHint("Overrides the final image with renderer-side diagnostic output.");
+    if (settings.debugViewMode == 1) {
+        changed |= ImGui::SliderFloat("Sample count scale", &settings.debugSampleCountScale, 1.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+        controlHint("False-color scale for the logarithmic per-pixel volume sample count view.");
+    }
+#endif
     if (settings.rendererMode == 1) {
         const char* historyModes[] = {"Temporal denoiser", "Accumulation"};
         changed |= ImGui::Combo("Path history", &settings.pathHistoryMode, historyModes, 2);
@@ -1137,6 +1161,10 @@ RenderConstants makeConstants(
     c.cloudPhaseGd = cloudPhase.gD;
     c.cloudPhaseAlpha = cloudPhase.alpha;
     c.cloudPhaseWeight = cloudPhase.weightD;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 1));
+    c.debugSampleCountScale = std::max(settings.debugSampleCountScale, 1.0f);
+#endif
     return c;
 }
 

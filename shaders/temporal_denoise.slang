@@ -11,6 +11,14 @@ void temporalDenoise(uint3 dispatchThreadId : SV_DispatchThreadID)
     float4 current = gCurrentColor.Load(int3(pixel, 0));
     float4 history = gHistoryColor.Load(int3(pixel, 0));
 
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    if (debugViewMode != 0u) {
+        gDenoisedOut[pixel] = current;
+        gHistoryOut[pixel] = current;
+        return;
+    }
+#endif
+
     float4 denoised;
     if (rendererMode == 1u && pathHistoryMode == 1u) {
         float sampleCount = resetHistory != 0u ? 0.0f : max(history.a, 0.0f);

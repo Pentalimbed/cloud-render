@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(CLOUD_RENDER_ENABLE_DEBUG_VIZ "Enable debug visualization controls and shader diagnostics" ON)
+
 find_package(OpenVDB CONFIG REQUIRED)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(imgui CONFIG REQUIRED)
@@ -22,6 +24,10 @@ set(SHADER_PASSES
     temporalDenoise "${CMAKE_CURRENT_SOURCE_DIR}/shaders/temporal_denoise.slang"
     tonemap "${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.slang"
 )
+set(SHADER_DEFINES)
+if(CLOUD_RENDER_ENABLE_DEBUG_VIZ)
+    list(APPEND SHADER_DEFINES "-DCLOUD_RENDER_ENABLE_DEBUG_VIZ=1")
+endif()
 
 while(SHADER_PASSES)
     list(POP_FRONT SHADER_PASSES entry source)
@@ -33,6 +39,7 @@ while(SHADER_PASSES)
             -target hlsl
             -profile cs_5_0
             -entry "${entry}"
+            ${SHADER_DEFINES}
             -I "${CMAKE_CURRENT_SOURCE_DIR}"
             "${source}"
             -o "${output}"
@@ -55,6 +62,10 @@ target_compile_definitions(cloud_render PRIVATE
     WIN32_LEAN_AND_MEAN
     NANOVDB_USE_OPENVDB
 )
+
+if(CLOUD_RENDER_ENABLE_DEBUG_VIZ)
+    target_compile_definitions(cloud_render PRIVATE CLOUD_RENDER_ENABLE_DEBUG_VIZ=1)
+endif()
 
 target_compile_options(cloud_render PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>"

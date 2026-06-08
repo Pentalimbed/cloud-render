@@ -1,3 +1,7 @@
+#ifndef CLOUD_RENDER_ENABLE_DEBUG_VIZ
+#define CLOUD_RENDER_ENABLE_DEBUG_VIZ 0
+#endif
+
 cbuffer RenderConstants : register(b0)
 {
     float3 cameraPosition;
@@ -46,8 +50,13 @@ cbuffer RenderConstants : register(b0)
     float cloudPhaseAlpha;
 
     float cloudPhaseWeight;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    uint debugViewMode;
+    float debugSampleCountScale;
+#else
     float phasePad0;
     float phasePad1;
+#endif
     float phasePad2;
 }
 

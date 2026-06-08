@@ -18,6 +18,13 @@ void tonemap(uint3 dispatchThreadId : SV_DispatchThreadID)
     }
 
     uint2 pixel = dispatchThreadId.xy;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    if (debugViewMode != 0u) {
+        gDisplayOut[pixel] = float4(saturate(gDenoisedColor.Load(int3(pixel, 0)).rgb), 1.0f);
+        return;
+    }
+#endif
+
     float3 hdr = gDenoisedColor.Load(int3(pixel, 0)).rgb * exposure;
     float3 srgb = pow(tonemapAces(hdr), float3(1.0f / 2.2f, 1.0f / 2.2f, 1.0f / 2.2f));
     gDisplayOut[pixel] = float4(srgb, 1.0f);

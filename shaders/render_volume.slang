@@ -32,6 +32,10 @@ float max3(float3 v)
 
 #include "phase.slang"
 
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+static uint gVolumeSampleCount;
+#endif
+
 float3 transmittanceFromOpticalDepth(float3 opticalDepth)
 {
     return exp(-min(opticalDepth, float3(80.0f, 80.0f, 80.0f)));
@@ -96,11 +100,42 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
     return readDensityAtCoord(base + corner, accessor);
 }
 
-float sampleDensityWorld(float3 worldPosition, pnanovdb_grid_handle_t grid, inout pnanovdb_readaccessor_t accessor, inout uint rng)
+float sampleDensityWorld(
+    float3 worldPosition,
+    pnanovdb_grid_handle_t grid,
+    inout pnanovdb_readaccessor_t accessor,
+    inout uint rng)
 {
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    gVolumeSampleCount += 1u;
+#endif
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
     return sampleDensityIndex(indexPosition, accessor, rng) * densityMultiplier;
 }
+
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+float3 sampleCountDebugColor()
+{
+    float scale = max(debugSampleCountScale, 1.0f);
+    float t = saturate(log2(float(gVolumeSampleCount) + 1.0f) / log2(scale + 1.0f));
+    float3 c0 = float3(0.02f, 0.03f, 0.08f);
+    float3 c1 = float3(0.00f, 0.45f, 1.00f);
+    float3 c2 = float3(0.10f, 0.95f, 0.45f);
+    float3 c3 = float3(1.00f, 0.85f, 0.10f);
+    float3 c4 = float3(1.00f, 0.08f, 0.02f);
+
+    if (t < 0.25f) {
+        return lerp(c0, c1, t * 4.0f);
+    }
+    if (t < 0.50f) {
+        return lerp(c1, c2, (t - 0.25f) * 4.0f);
+    }
+    if (t < 0.75f) {
+        return lerp(c2, c3, (t - 0.50f) * 4.0f);
+    }
+    return lerp(c3, c4, (t - 0.75f) * 4.0f);
+}
+#endif
 
 float3 estimateLightTransmittance(
     float3 worldPosition,
@@ -135,7 +170,12 @@ float3 estimateLightTransmittance(
     return transmittanceFromOpticalDepth(optical);
 }
 
-float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng)
+float3 renderRaymarchSample(
+    float3 rayOrigin,
+    float3 rayDirection,
+    pnanovdb_grid_handle_t grid,
+    pnanovdb_root_handle_t root,
+    inout uint rng)
 {
     float t0;
     float t1;
@@ -231,7 +271,12 @@ bool sampleVolPathEvent(
     return false;
 }
 
-float3 renderPathTraceSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng)
+float3 renderPathTraceSample(
+    float3 rayOrigin,
+    float3 rayDirection,
+    pnanovdb_grid_handle_t grid,
+    pnanovdb_root_handle_t root,
+    inout uint rng)
 {
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
@@ -290,8 +335,22 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
     pnanovdb_root_handle_t root = gridRoot(grid);
 
     float3 rayDirection = makeCameraRay(pixel, seed);
-    float3 color = rendererMode == 0u
-        ? renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed)
-        : renderPathTraceSample(cameraPosition, rayDirection, grid, root, seed);
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    gVolumeSampleCount = 0u;
+#endif
+    float3 color;
+    if (rendererMode == 0u) {
+        color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed);
+    } else {
+        color = renderPathTraceSample(cameraPosition, rayDirection, grid, root, seed);
+    }
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    if (debugViewMode == 1u) {
+        color = sampleCountDebugColor();
+    }
+
+    gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), min(float(gVolumeSampleCount), 65504.0f));
+#else
     gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), 1.0f);
+#endif
 }

@@ -162,7 +162,7 @@ float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid
         if (density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
             float3 lightTr = estimateLightTransmittance(position, grid, root, raymarchShadowSteps, rng);
-            float phase = evalPhase(dot(safeNormalize(lightDirection), -rayDirection));
+            float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
             radiance += throughput * lightColor * lightTr * scattering * density * phase * dt;
             throughput *= transmittanceFromOpticalDepth(sigmaT * density * dt);
             if (max3(throughput) < 0.003f) {
@@ -247,7 +247,7 @@ float3 renderPathTraceSample(float3 rayOrigin, float3 rayDirection, pnanovdb_gri
         // light, the light-sampling MIS branch from volpathmis degenerates to
         // weight 1; phase-sampled paths cannot hit this light by solid angle.
         float3 lightTr = estimateLightTransmittance(position, grid, root, 48u, rng);
-        float phase = evalPhase(dot(safeNormalize(lightDirection), -rayDirection));
+        float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
         radiance += throughput * lightColor * lightTr * phase;
 
         rayDirection = samplePhaseDirection(rayDirection, rng);

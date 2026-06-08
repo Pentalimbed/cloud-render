@@ -25,32 +25,30 @@ cbuffer RenderConstants : register(b0)
     float exposure;
 
     float3 volumeWorldMin;
-    uint raymarchSteps;
+    uint raymarchPrimarySteps;
 
     float3 volumeWorldMax;
-    uint shadowSteps;
+    uint raymarchShadowSteps;
 
-    uint pathSamples;
-    uint pathDepth;
+    uint pathMaxBounces;
     float fovYRadians;
     float temporalBlend;
-
     float densityMajorant;
+
     float timeSeconds;
     uint resetHistory;
     uint pathHistoryMode;
+    uint phaseFunctionMode;
 
-    float3 volumeRenderToNativeX;
-    float volumeTransformPad0;
+    float draineAlpha;
+    float cloudPhaseGhg;
+    float cloudPhaseGd;
+    float cloudPhaseAlpha;
 
-    float3 volumeRenderToNativeY;
-    float volumeTransformPad1;
-
-    float3 volumeRenderToNativeZ;
-    float volumeTransformPad2;
-
-    float3 volumeRenderToNativeOrigin;
-    float volumeTransformPad3;
+    float cloudPhaseWeight;
+    float phasePad0;
+    float phasePad1;
+    float phasePad2;
 }
 
 StructuredBuffer<uint> gNanoVdb : register(t0);

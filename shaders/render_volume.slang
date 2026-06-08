@@ -3,9 +3,6 @@
 #define PNANOVDB_HLSL
 #include "PNanoVDB.h"
 
-static const float Pi = 3.14159265358979323846f;
-static const float Inv4Pi = 0.07957747154594767f;
-
 uint hashUint(uint x)
 {
     x ^= x >> 16u;
@@ -25,13 +22,15 @@ float rand01(inout uint state)
 float3 safeNormalize(float3 v)
 {
     float l2 = dot(v, v);
-    return l2 > 1.0e-12f ? v * rsqrt(l2) : float3(0.0f, 1.0f, 0.0f);
+    return l2 > 1.0e-12f ? v * rsqrt(l2) : float3(0.0f, 0.0f, 1.0f);
 }
 
 float max3(float3 v)
 {
     return max(max(v.x, v.y), v.z);
 }
+
+#include "phase.slang"
 
 float3 transmittanceFromOpticalDepth(float3 opticalDepth)
 {
@@ -49,21 +48,6 @@ pnanovdb_root_handle_t gridRoot(pnanovdb_grid_handle_t grid)
 {
     pnanovdb_tree_handle_t tree = pnanovdb_grid_get_tree(gNanoVdb, grid);
     return pnanovdb_tree_get_root(gNanoVdb, tree);
-}
-
-float3 renderToNativePoint(float3 p)
-{
-    return volumeRenderToNativeOrigin
-        + volumeRenderToNativeX * p.x
-        + volumeRenderToNativeY * p.y
-        + volumeRenderToNativeZ * p.z;
-}
-
-float3 renderToNativeDirection(float3 v)
-{
-    return volumeRenderToNativeX * v.x
-        + volumeRenderToNativeY * v.y
-        + volumeRenderToNativeZ * v.z;
 }
 
 bool clipIndexBounds(float3 origin, float3 direction, float3 bmin, float3 bmax, out float tmin, out float tmax)
@@ -86,10 +70,8 @@ bool clipVolume(pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, float3
     pnanovdb_coord_t bboxMaxCoord = pnanovdb_root_get_bbox_max(gNanoVdb, root);
     float3 bmin = float3(bboxMinCoord);
     float3 bmax = float3(bboxMaxCoord + int3(1, 1, 1));
-    float3 nativeOrigin = renderToNativePoint(rayOrigin);
-    float3 nativeDirection = renderToNativeDirection(rayDirection);
-    float3 indexOrigin = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, nativeOrigin);
-    float3 indexDirection = pnanovdb_grid_world_to_index_dirf(gNanoVdb, grid, nativeDirection);
+    float3 indexOrigin = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, rayOrigin);
+    float3 indexDirection = pnanovdb_grid_world_to_index_dirf(gNanoVdb, grid, rayDirection);
     return clipIndexBounds(indexOrigin, indexDirection, bmin, bmax, tmin, tmax);
 }
 
@@ -116,12 +98,16 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
 
 float sampleDensityWorld(float3 worldPosition, pnanovdb_grid_handle_t grid, inout pnanovdb_readaccessor_t accessor, inout uint rng)
 {
-    float3 nativeWorldPosition = renderToNativePoint(worldPosition);
-    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, nativeWorldPosition);
+    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
     return sampleDensityIndex(indexPosition, accessor, rng) * densityMultiplier;
 }
 
-float3 estimateLightTransmittance(float3 worldPosition, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng)
+float3 estimateLightTransmittance(
+    float3 worldPosition,
+    pnanovdb_grid_handle_t grid,
+    pnanovdb_root_handle_t root,
+    uint stepBudget,
+    inout uint rng)
 {
     float3 lightDir = safeNormalize(lightDirection);
     float t0;
@@ -131,7 +117,7 @@ float3 estimateLightTransmittance(float3 worldPosition, pnanovdb_grid_handle_t g
     }
 
     t0 = max(t0, 0.0f);
-    uint steps = max(1u, shadowSteps);
+    uint steps = max(1u, stepBudget);
     float dt = max((t1 - t0) / float(steps), 0.001f);
     float t = t0 + dt * rand01(rng);
     float3 optical = float3(0.0f, 0.0f, 0.0f);
@@ -149,40 +135,6 @@ float3 estimateLightTransmittance(float3 worldPosition, pnanovdb_grid_handle_t g
     return transmittanceFromOpticalDepth(optical);
 }
 
-float phaseHenyeyGreenstein(float cosTheta)
-{
-    float g = clamp(anisotropy, -0.95f, 0.95f);
-    float denom = max(1.0f + g * g - 2.0f * g * cosTheta, 1.0e-4f);
-    return Inv4Pi * (1.0f - g * g) / (denom * sqrt(denom));
-}
-
-void makeBasis(float3 n, out float3 tangent, out float3 bitangent)
-{
-    float3 helper = abs(n.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
-    tangent = safeNormalize(cross(helper, n));
-    bitangent = cross(n, tangent);
-}
-
-float3 sampleHenyeyGreensteinDirection(float3 incomingDirection, inout uint rng)
-{
-    float g = clamp(anisotropy, -0.95f, 0.95f);
-    float u = rand01(rng);
-    float cosTheta;
-    if (abs(g) < 1.0e-3f) {
-        cosTheta = 1.0f - 2.0f * u;
-    } else {
-        float sq = (1.0f - g * g) / max(1.0f - g + 2.0f * g * u, 1.0e-4f);
-        cosTheta = clamp((1.0f + g * g - sq * sq) / (2.0f * g), -1.0f, 1.0f);
-    }
-
-    float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
-    float phi = 2.0f * Pi * rand01(rng);
-    float3 t;
-    float3 b;
-    makeBasis(safeNormalize(incomingDirection), t, b);
-    return safeNormalize(t * (cos(phi) * sinTheta) + b * (sin(phi) * sinTheta) + safeNormalize(incomingDirection) * cosTheta);
-}
-
 float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng)
 {
     float t0;
@@ -192,7 +144,7 @@ float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid
     }
 
     t0 = max(t0, 0.0f);
-    uint steps = max(1u, raymarchSteps);
+    uint steps = max(1u, raymarchPrimarySteps);
     float dt = max((t1 - t0) / float(steps), 0.001f);
     float jitter = lerp(0.5f, rand01(rng), saturate(stepJitter));
     float t = t0 + dt * jitter;
@@ -209,8 +161,8 @@ float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid
         float density = sampleDensityWorld(position, grid, accessor, rng);
         if (density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
-            float3 lightTr = estimateLightTransmittance(position, grid, root, rng);
-            float phase = phaseHenyeyGreenstein(dot(safeNormalize(lightDirection), -rayDirection));
+            float3 lightTr = estimateLightTransmittance(position, grid, root, raymarchShadowSteps, rng);
+            float phase = evalPhase(dot(safeNormalize(lightDirection), -rayDirection));
             radiance += throughput * lightColor * lightTr * scattering * density * phase * dt;
             throughput *= transmittanceFromOpticalDepth(sigmaT * density * dt);
             if (max3(throughput) < 0.003f) {
@@ -251,7 +203,7 @@ bool sampleVolPathEvent(
     // majorant, classify sampled points as null or real medium events, and carry
     // the corresponding throughput ratio forward.
     [loop]
-    for (uint step = 0u; step < max(1u, raymarchSteps) && t < t1; ++step) {
+    for (uint step = 0u; step < 1024u && t < t1; ++step) {
         t += -log(max(rand01(rng), 1.0e-6f)) / majorant;
         if (t >= t1) {
             return false;
@@ -285,7 +237,7 @@ float3 renderPathTraceSample(float3 rayOrigin, float3 rayDirection, pnanovdb_gri
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
 
     [loop]
-    for (uint bounce = 0u; bounce < max(1u, pathDepth); ++bounce) {
+    for (uint bounce = 0u; bounce < max(1u, pathMaxBounces); ++bounce) {
         float3 position;
         if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, rng, throughput, position)) {
             break;
@@ -294,11 +246,11 @@ float3 renderPathTraceSample(float3 rayOrigin, float3 rayDirection, pnanovdb_gri
         // Directional-light next-event estimate. With a single delta directional
         // light, the light-sampling MIS branch from volpathmis degenerates to
         // weight 1; phase-sampled paths cannot hit this light by solid angle.
-        float3 lightTr = estimateLightTransmittance(position, grid, root, rng);
-        float phase = phaseHenyeyGreenstein(dot(safeNormalize(lightDirection), -rayDirection));
+        float3 lightTr = estimateLightTransmittance(position, grid, root, 48u, rng);
+        float phase = evalPhase(dot(safeNormalize(lightDirection), -rayDirection));
         radiance += throughput * lightColor * lightTr * phase;
 
-        rayDirection = sampleHenyeyGreensteinDirection(rayDirection, rng);
+        rayDirection = samplePhaseDirection(rayDirection, rng);
         rayOrigin = position + rayDirection * 0.02f;
 
         if (bounce >= 2u) {
@@ -337,19 +289,9 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
     pnanovdb_grid_handle_t grid = firstGrid();
     pnanovdb_root_handle_t root = gridRoot(grid);
 
-    uint samples = max(1u, pathSamples);
-    float3 color = float3(0.0f, 0.0f, 0.0f);
-
-    [loop]
-    for (uint i = 0u; i < samples; ++i) {
-        float3 rayDirection = makeCameraRay(pixel, seed);
-        if (rendererMode == 0u) {
-            color += renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed);
-        } else {
-            color += renderPathTraceSample(cameraPosition, rayDirection, grid, root, seed);
-        }
-    }
-
-    color /= float(samples);
+    float3 rayDirection = makeCameraRay(pixel, seed);
+    float3 color = rendererMode == 0u
+        ? renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed)
+        : renderPathTraceSample(cameraPosition, rayDirection, grid, root, seed);
     gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), 1.0f);
 }

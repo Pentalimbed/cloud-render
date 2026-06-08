@@ -13,7 +13,10 @@ find_package(imgui CONFIG REQUIRED)
 find_program(SLANGC_EXECUTABLE NAMES slangc REQUIRED)
 
 set(SHADER_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/compiled_shaders")
-set(SHADER_COMMON "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bindings.slang")
+set(SHADER_COMMON
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bindings.slang"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shaders/phase.slang"
+)
 set(SHADER_PASSES
     renderVolume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/render_volume.slang"
     temporalDenoise "${CMAKE_CURRENT_SOURCE_DIR}/shaders/temporal_denoise.slang"
@@ -33,7 +36,7 @@ while(SHADER_PASSES)
             -I "${CMAKE_CURRENT_SOURCE_DIR}"
             "${source}"
             -o "${output}"
-        DEPENDS "${source}" "${SHADER_COMMON}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/PNanoVDB.h"
+        DEPENDS "${source}" ${SHADER_COMMON} "${CMAKE_CURRENT_SOURCE_DIR}/shaders/PNanoVDB.h"
         VERBATIM
     )
     list(APPEND COMPILED_SHADERS "${output}")
@@ -55,6 +58,7 @@ target_compile_definitions(cloud_render PRIVATE
 
 target_compile_options(cloud_render PRIVATE
     "$<$<CXX_COMPILER_ID:MSVC>:/Zc:__cplusplus>"
+    "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>"
 )
 
 target_link_libraries(cloud_render PRIVATE

@@ -33,7 +33,9 @@
 #include <nanovdb/NanoVDB.h>
 #include <nanovdb/io/IO.h>
 #include <nanovdb/tools/CreateNanoGrid.h>
+#include <nanovdb/tools/NanoToOpenVDB.h>
 #include <openvdb/io/File.h>
+#include <openvdb/math/Mat4.h>
 #include <openvdb/openvdb.h>
 
 using Microsoft::WRL::ComPtr;
@@ -89,10 +91,12 @@ Vec3 normalize(Vec3 v)
 {
     const float len = length(v);
     if (len <= 1.0e-8f) {
-        return {0.0f, 1.0f, 0.0f};
+        return {0.0f, 0.0f, 1.0f};
     }
     return v / len;
 }
+
+constexpr Vec3 kWorldUp = {0.0f, 0.0f, 1.0f};
 
 float maxComponent(Vec3 v)
 {
@@ -123,18 +127,6 @@ void setComponent(Vec3& v, int axis, float value)
     default:
         v.z = value;
         break;
-    }
-}
-
-Vec3 axisVector(int axis)
-{
-    switch (axis) {
-    case 0:
-        return {1.0f, 0.0f, 0.0f};
-    case 1:
-        return {0.0f, 1.0f, 0.0f};
-    default:
-        return {0.0f, 0.0f, 1.0f};
     }
 }
 
@@ -220,17 +212,22 @@ struct Volume {
     Vec3 nativeWorldMax;
     Vec3 worldMin;
     Vec3 worldMax;
-    Vec3 renderToNativeX = {1.0f, 0.0f, 0.0f};
-    Vec3 renderToNativeY = {0.0f, 1.0f, 0.0f};
-    Vec3 renderToNativeZ = {0.0f, 0.0f, 1.0f};
-    Vec3 renderToNativeOrigin;
-    int nativeUpAxis = 1;
+    int nativeUpAxis = 2;
     std::string gridName;
 };
 
 struct Bounds {
     Vec3 min;
     Vec3 max;
+};
+
+struct VolumePlacement {
+    Vec3 nativeWorldMin;
+    Vec3 nativeWorldMax;
+    Vec3 worldMin;
+    Vec3 worldMax;
+    openvdb::math::Mat4d nativeToRender = openvdb::math::Mat4d::identity();
+    int nativeUpAxis = 2;
 };
 
 template <typename GridT>
@@ -284,47 +281,90 @@ int shortestAxis(Vec3 extent)
     return axis;
 }
 
-void applyVolumePlacement(Volume& volume, Vec3 nativeWorldMin, Vec3 nativeWorldMax)
+VolumePlacement makeVolumePlacement(Vec3 nativeWorldMin, Vec3 nativeWorldMax)
 {
-    volume.nativeWorldMin = nativeWorldMin;
-    volume.nativeWorldMax = nativeWorldMax;
-
     const Vec3 nativeExtent = nativeWorldMax - nativeWorldMin;
     const int upAxis = shortestAxis(nativeExtent);
     const int renderXAxis = (upAxis + 2) % 3;
-    const int renderZAxis = (upAxis + 1) % 3;
+    const int renderYAxis = (upAxis + 1) % 3;
 
     Vec3 nativeOrigin = (nativeWorldMin + nativeWorldMax) * 0.5f;
     setComponent(nativeOrigin, upAxis, component(nativeWorldMin, upAxis));
 
     const Vec3 renderExtent = {
         component(nativeExtent, renderXAxis),
+        component(nativeExtent, renderYAxis),
         component(nativeExtent, upAxis),
-        component(nativeExtent, renderZAxis),
     };
 
-    volume.renderToNativeX = axisVector(renderXAxis);
-    volume.renderToNativeY = axisVector(upAxis);
-    volume.renderToNativeZ = axisVector(renderZAxis);
-    volume.renderToNativeOrigin = nativeOrigin;
-    volume.nativeUpAxis = upAxis;
+    openvdb::math::Mat4d nativeToRender = openvdb::math::Mat4d::zero();
+    nativeToRender[renderXAxis][0] = 1.0;
+    nativeToRender[renderYAxis][1] = 1.0;
+    nativeToRender[upAxis][2] = 1.0;
+    nativeToRender[3][0] = -static_cast<double>(component(nativeOrigin, renderXAxis));
+    nativeToRender[3][1] = -static_cast<double>(component(nativeOrigin, renderYAxis));
+    nativeToRender[3][2] = -static_cast<double>(component(nativeOrigin, upAxis));
+    nativeToRender[3][3] = 1.0;
 
-    volume.worldMin = {-renderExtent.x * 0.5f, 0.0f, -renderExtent.z * 0.5f};
-    volume.worldMax = {renderExtent.x * 0.5f, renderExtent.y, renderExtent.z * 0.5f};
+    VolumePlacement placement;
+    placement.nativeWorldMin = nativeWorldMin;
+    placement.nativeWorldMax = nativeWorldMax;
+    placement.worldMin = {-renderExtent.x * 0.5f, -renderExtent.y * 0.5f, 0.0f};
+    placement.worldMax = {renderExtent.x * 0.5f, renderExtent.y * 0.5f, renderExtent.z};
+    placement.nativeToRender = nativeToRender;
+    placement.nativeUpAxis = upAxis;
+    return placement;
+}
+
+void applyVolumePlacement(openvdb::FloatGrid& grid, Volume& volume, const openvdb::CoordBBox& activeBBox)
+{
+    if (!grid.transform().isLinear()) {
+        throw std::runtime_error("Selected VDB grid must have a linear transform");
+    }
+
+    const Bounds nativeWorldBounds = activeWorldBounds(grid, activeBBox);
+    const VolumePlacement placement = makeVolumePlacement(nativeWorldBounds.min, nativeWorldBounds.max);
+    const auto oldIndexToNative = grid.transform().baseMap()->getAffineMap()->getMat4();
+    grid.setTransform(openvdb::math::Transform::createLinearTransform(oldIndexToNative * placement.nativeToRender));
+
+    const Bounds renderWorldBounds = activeWorldBounds(grid, activeBBox);
+    volume.nativeWorldMin = placement.nativeWorldMin;
+    volume.nativeWorldMax = placement.nativeWorldMax;
+    volume.worldMin = renderWorldBounds.min;
+    volume.worldMax = renderWorldBounds.max;
+    volume.nativeUpAxis = placement.nativeUpAxis;
 }
 
 Volume loadNvdb(const std::filesystem::path& path)
 {
-    Volume volume;
-    volume.handle = nanovdb::io::readGrid(path.string());
-    const auto* grid = volume.handle.grid<float>();
-    if (!grid) {
+    auto nanoHandle = nanovdb::io::readGrid(path.string());
+    const auto* nanoGrid = nanoHandle.grid<float>();
+    if (!nanoGrid) {
         throw std::runtime_error(".nvdb file does not contain a float NanoVDB grid: " + path.string());
     }
 
-    const auto bbox = grid->worldBBox();
-    applyVolumePlacement(volume, toVec3(bbox.min()), toVec3(bbox.max()));
-    volume.gridName = grid->gridName();
+    openvdb::GridBase::Ptr base = nanovdb::tools::nanoToOpenVDB(nanoHandle);
+    if (!base || !base->isType<openvdb::FloatGrid>()) {
+        throw std::runtime_error("NanoVDB to OpenVDB conversion did not produce a float grid: " + path.string());
+    }
+
+    auto grid = openvdb::gridPtrCast<openvdb::FloatGrid>(base);
+    if (grid->getGridClass() == openvdb::GRID_UNKNOWN) {
+        grid->setGridClass(openvdb::GRID_FOG_VOLUME);
+    }
+
+    openvdb::CoordBBox activeBBox;
+    if (!grid->tree().evalActiveVoxelBoundingBox(activeBBox)) {
+        throw std::runtime_error("Selected NanoVDB grid has no active voxels: " + std::string(nanoGrid->gridName()));
+    }
+
+    Volume volume;
+    applyVolumePlacement(*grid, volume, activeBBox);
+    volume.handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(*grid);
+    if (!volume.handle.grid<float>()) {
+        throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float grid");
+    }
+    volume.gridName = nanoGrid->gridName();
     return volume;
 }
 
@@ -359,14 +399,12 @@ Volume loadVdb(const std::filesystem::path& path)
         throw std::runtime_error("Selected VDB grid has no active voxels: " + selectedName);
     }
 
-    const Bounds nativeWorldBounds = activeWorldBounds(*grid, activeBBox);
-
     Volume volume;
+    applyVolumePlacement(*grid, volume, activeBBox);
     volume.handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(*grid);
     if (!volume.handle.grid<float>()) {
         throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float grid");
     }
-    applyVolumePlacement(volume, nativeWorldBounds.min, nativeWorldBounds.max);
     volume.gridName = selectedName;
     return volume;
 }
@@ -396,31 +434,35 @@ struct Camera {
     Vec3 forward() const
     {
         const float cp = std::cos(pitch);
-        return normalize({std::sin(yaw) * cp, std::sin(pitch), std::cos(yaw) * cp});
+        return normalize({std::sin(yaw) * cp, std::cos(yaw) * cp, std::sin(pitch)});
     }
 
     Vec3 right() const
     {
-        return normalize(cross({0.0f, 1.0f, 0.0f}, forward()));
+        Vec3 rightVector = cross(forward(), kWorldUp);
+        if (length(rightVector) <= 1.0e-8f) {
+            rightVector = {1.0f, 0.0f, 0.0f};
+        }
+        return normalize(rightVector);
     }
 
     Vec3 up() const
     {
-        return normalize(cross(forward(), right()));
+        return normalize(cross(right(), forward()));
     }
 };
 
 Camera makeInitialCamera(Vec3 worldMin, Vec3 worldMax)
 {
     const Vec3 extent = worldMax - worldMin;
-    const float horizontalRadius = std::max(std::max(extent.x, extent.z) * 0.5f, 1.0f);
-    const Vec3 target = {0.0f, std::max(extent.y * 0.45f, 1.0f), horizontalRadius * 0.35f};
+    const float horizontalRadius = std::max(std::max(extent.x, extent.y) * 0.5f, 1.0f);
+    const Vec3 target = {0.0f, horizontalRadius * 0.35f, std::max(extent.z * 0.45f, 1.0f)};
     const Vec3 dir = normalize(target);
 
     Camera camera;
     camera.position = {0.0f, 0.0f, 0.0f};
-    camera.pitch = std::asin(std::clamp(dir.y, -0.99f, 0.99f));
-    camera.yaw = std::atan2(dir.x, dir.z);
+    camera.pitch = std::asin(std::clamp(dir.z, -0.99f, 0.99f));
+    camera.yaw = std::atan2(dir.x, dir.y);
     return camera;
 }
 
@@ -429,19 +471,65 @@ struct RenderSettings {
     float densityMultiplier = 1.0f;
     Vec3 absorption = {0.08f, 0.08f, 0.08f};
     Vec3 scattering = {0.65f, 0.70f, 0.78f};
-    Vec3 lightDirection = {-0.35f, 0.8f, 0.3f};
+    Vec3 lightDirection = {-0.35f, 0.3f, 0.8f};
     Vec3 lightColor = {5.0f, 4.85f, 4.55f};
+    int phaseFunctionMode = 0;
     float anisotropy = 0.15f;
+    float draineAlpha = 1.0f;
+    float cloudDiameterMicrons = 20.0f;
     float exposure = 1.0f;
     float temporalBlend = 0.88f;
     float stepJitter = 1.0f;
     float densityMajorant = 1.0f;
     int pathHistoryMode = 0;
-    int raymarchSteps = 160;
-    int shadowSteps = 48;
-    int pathSamples = 1;
-    int pathDepth = 4;
+    int raymarchPrimarySteps = 160;
+    int raymarchShadowSteps = 48;
+    int pathMaxBounces = 4;
 };
+
+struct CloudPhaseParameters {
+    float gHg = 0.0f;
+    float gD = 0.0f;
+    float alpha = 1.0f;
+    float weightD = 0.0f;
+};
+
+CloudPhaseParameters makeCloudPhaseParameters(float diameterMicrons)
+{
+    const float d = std::clamp(diameterMicrons, 0.001f, 50.0f);
+    CloudPhaseParameters params;
+
+    if (d <= 0.1f) {
+        params.gHg = 13.8f * d * d;
+        params.gD = 1.1456f * d * std::sin(9.29044f * d);
+        params.alpha = 250.0f;
+        params.weightD = 0.252977f - 312.983f * std::pow(d, 4.3f);
+    } else if (d < 1.5f) {
+        const float logD = std::log(d);
+        const float inner = ((logD - 0.238604f) * (logD + 1.00667f)) / (0.507522f - 0.15677f * logD);
+        params.gHg = 0.862f - 0.143f * logD * logD;
+        params.gD = 0.379685f * std::cos(1.19692f * std::cos(inner) + 1.37932f * logD + 0.0625835f) + 0.344213f;
+        params.alpha = 250.0f;
+        params.weightD = 0.146209f * std::cos(3.38707f * logD + 2.11193f) + 0.316072f + 0.0778917f * logD;
+    } else if (d < 5.0f) {
+        const float logD = std::log(d);
+        params.gHg = 0.0604931f * std::log(logD) + 0.940256f;
+        params.gD = 0.500411f - 0.081287f / (-2.0f * logD + std::tan(logD) + 1.27551f);
+        params.alpha = 7.30354f * logD + 6.31675f;
+        params.weightD = 0.026914f * (logD - std::cos(5.68947f * (std::log(logD) - 0.0292149f))) + 0.376475f;
+    } else {
+        params.gHg = std::exp(-0.0990567f / (d - 1.67154f));
+        params.gD = std::exp(-2.20679f / (d + 3.91029f) - 0.428934f);
+        params.alpha = std::exp(3.62489f - 8.29288f / (d + 5.52825f));
+        params.weightD = std::exp(-0.599085f / (d - 0.641583f) - 0.665888f);
+    }
+
+    params.gHg = std::clamp(params.gHg, -0.999f, 0.999f);
+    params.gD = std::clamp(params.gD, -0.999f, 0.999f);
+    params.alpha = std::max(params.alpha, 0.0f);
+    params.weightD = std::clamp(params.weightD, 0.0f, 1.0f);
+    return params;
+}
 
 struct RenderConstants {
     Vec3 cameraPosition;
@@ -469,32 +557,30 @@ struct RenderConstants {
     float exposure;
 
     Vec3 volumeWorldMin;
-    uint32_t raymarchSteps;
+    uint32_t raymarchPrimarySteps;
 
     Vec3 volumeWorldMax;
-    uint32_t shadowSteps;
+    uint32_t raymarchShadowSteps;
 
-    uint32_t pathSamples;
-    uint32_t pathDepth;
+    uint32_t pathMaxBounces;
     float fovYRadians;
     float temporalBlend;
-
     float densityMajorant;
+
     float timeSeconds;
     uint32_t resetHistory;
     uint32_t pathHistoryMode;
+    uint32_t phaseFunctionMode;
 
-    Vec3 volumeRenderToNativeX;
-    float _volumeTransformPad0;
+    float draineAlpha;
+    float cloudPhaseGhg;
+    float cloudPhaseGd;
+    float cloudPhaseAlpha;
 
-    Vec3 volumeRenderToNativeY;
-    float _volumeTransformPad1;
-
-    Vec3 volumeRenderToNativeZ;
-    float _volumeTransformPad2;
-
-    Vec3 volumeRenderToNativeOrigin;
-    float _volumeTransformPad3;
+    float cloudPhaseWeight;
+    float _phasePad0;
+    float _phasePad1;
+    float _phasePad2;
 };
 
 static_assert(sizeof(RenderConstants) % 16 == 0);
@@ -874,10 +960,10 @@ bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled,
         delta = delta - camera.right();
     }
     if (keyPressed(window, GLFW_KEY_E)) {
-        delta = delta + Vec3{0.0f, 1.0f, 0.0f};
+        delta = delta + kWorldUp;
     }
     if (keyPressed(window, GLFW_KEY_Q)) {
-        delta = delta - Vec3{0.0f, 1.0f, 0.0f};
+        delta = delta - kWorldUp;
     }
 
     if (length(delta) > 0.0f) {
@@ -931,34 +1017,76 @@ bool controlVec3Drag(const char* label, Vec3& value, float speed, float minValue
     return changed;
 }
 
-bool buildUi(RenderSettings& settings, const Volume& volume)
+void controlHint(const char* text)
+{
+    if (ImGui::IsItemHovered()) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+bool buildUi(RenderSettings& settings, const Volume& volume, float fps, float frameMs)
 {
     bool changed = false;
     ImGui::Begin("Cloud Renderer");
     ImGui::TextUnformatted(volume.gridName.c_str());
+    ImGui::Text("FPS %.1f (%.2f ms)", fps, frameMs);
+    ImGui::TextWrapped("Fly: F1 toggles UI, mouse look, WASD move, Q/E down/up, Shift fast");
     ImGui::Separator();
 
     const char* modes[] = {"Ray marching", "Path tracer"};
     changed |= ImGui::Combo("Renderer", &settings.rendererMode, modes, 2);
+    controlHint("Selects the primary volume integrator.");
     if (settings.rendererMode == 1) {
         const char* historyModes[] = {"Temporal denoiser", "Accumulation"};
         changed |= ImGui::Combo("Path history", &settings.pathHistoryMode, historyModes, 2);
+        controlHint("Accumulation averages path-traced samples until the camera or settings change.");
     }
     changed |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 20.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    controlHint("Scales sampled VDB density before absorption and scattering.");
     changed |= controlVec3Color("Absorption", settings.absorption);
+    controlHint("Per-channel extinction that removes light in the medium.");
     changed |= controlVec3Color("Scattering", settings.scattering);
+    controlHint("Per-channel scattering coefficient for in-scattered light.");
     changed |= controlVec3Drag("Light direction", settings.lightDirection, 0.01f, -1.0f, 1.0f);
+    controlHint("Directional light vector; it is normalized after editing.");
     settings.lightDirection = normalize(settings.lightDirection);
     changed |= controlVec3Color("Light color", settings.lightColor);
-    changed |= ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.95f, 0.95f, "%.2f");
+    controlHint("HDR directional light radiance.");
+    const char* phaseModes[] = {"Henyey-Greenstein", "Draine", "Jendersie cloud"};
+    changed |= ImGui::Combo("Phase", &settings.phaseFunctionMode, phaseModes, 3);
+    controlHint("Controls angular scattering distribution used by lighting and path scattering.");
+    if (settings.phaseFunctionMode == 2) {
+        changed |= ImGui::SliderFloat("Cloud diameter (um)", &settings.cloudDiameterMicrons, 0.001f, 50.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+        controlHint("Particle diameter for the CPU-evaluated Jendersie cloud phase approximation.");
+    } else {
+        changed |= ImGui::SliderFloat("Anisotropy", &settings.anisotropy, -0.95f, 0.95f, "%.2f");
+        controlHint("Phase asymmetry parameter: positive values favor forward scattering.");
+        if (settings.phaseFunctionMode == 1) {
+            changed |= ImGui::SliderFloat("Draine alpha", &settings.draineAlpha, 0.0f, 250.0f, "%.3f");
+            controlHint("Draine alpha shape parameter; 1 matches Cornette-Shanks.");
+        }
+    }
     changed |= ImGui::SliderFloat("Exposure", &settings.exposure, 0.05f, 10.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    controlHint("Post-tonemap exposure multiplier.");
     changed |= ImGui::SliderFloat("Temporal blend", &settings.temporalBlend, 0.0f, 0.98f, "%.2f");
-    changed |= ImGui::SliderFloat("Step jitter", &settings.stepJitter, 0.0f, 1.0f, "%.2f");
-    changed |= ImGui::SliderFloat("Majorant", &settings.densityMajorant, 0.05f, 25.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
-    changed |= ImGui::SliderInt("Ray steps", &settings.raymarchSteps, 8, 1024);
-    changed |= ImGui::SliderInt("Shadow steps", &settings.shadowSteps, 4, 256);
-    changed |= ImGui::SliderInt("Samples", &settings.pathSamples, 1, 16);
-    changed |= ImGui::SliderInt("Path depth", &settings.pathDepth, 1, 12);
+    controlHint("History weight for temporal denoising.");
+    if (settings.rendererMode == 0) {
+        changed |= ImGui::SliderFloat("Step jitter", &settings.stepJitter, 0.0f, 1.0f, "%.2f");
+        controlHint("Randomizes raymarch step positions to reduce banding.");
+        changed |= ImGui::SliderInt("Primary ray steps", &settings.raymarchPrimarySteps, 8, 1024);
+        controlHint("Ray marcher primary integration steps.");
+        changed |= ImGui::SliderInt("Shadow ray steps", &settings.raymarchShadowSteps, 4, 256);
+        controlHint("Ray marcher light transmittance steps.");
+    } else {
+        changed |= ImGui::SliderFloat("Majorant", &settings.densityMajorant, 0.05f, 25.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+        controlHint("Scalar null-collision majorant multiplier for the path tracer.");
+        changed |= ImGui::SliderInt("Max bounces", &settings.pathMaxBounces, 1, 12);
+        controlHint("Maximum number of volume scattering events per path.");
+    }
 
     ImGui::End();
     return changed;
@@ -992,21 +1120,23 @@ RenderConstants makeConstants(
     c.scattering = settings.scattering;
     c.exposure = settings.exposure;
     c.volumeWorldMin = volume.worldMin;
-    c.raymarchSteps = static_cast<uint32_t>(std::max(1, settings.raymarchSteps));
+    c.raymarchPrimarySteps = static_cast<uint32_t>(std::max(1, settings.raymarchPrimarySteps));
     c.volumeWorldMax = volume.worldMax;
-    c.shadowSteps = static_cast<uint32_t>(std::max(1, settings.shadowSteps));
-    c.pathSamples = static_cast<uint32_t>(std::max(1, settings.pathSamples));
-    c.pathDepth = static_cast<uint32_t>(std::max(1, settings.pathDepth));
+    c.raymarchShadowSteps = static_cast<uint32_t>(std::max(1, settings.raymarchShadowSteps));
+    c.pathMaxBounces = static_cast<uint32_t>(std::max(1, settings.pathMaxBounces));
     c.fovYRadians = camera.fovYRadians;
     c.temporalBlend = settings.temporalBlend;
     c.densityMajorant = settings.densityMajorant;
     c.timeSeconds = timeSeconds;
     c.resetHistory = resetHistory ? 1u : 0u;
     c.pathHistoryMode = static_cast<uint32_t>(std::clamp(settings.pathHistoryMode, 0, 1));
-    c.volumeRenderToNativeX = volume.renderToNativeX;
-    c.volumeRenderToNativeY = volume.renderToNativeY;
-    c.volumeRenderToNativeZ = volume.renderToNativeZ;
-    c.volumeRenderToNativeOrigin = volume.renderToNativeOrigin;
+    c.phaseFunctionMode = static_cast<uint32_t>(std::clamp(settings.phaseFunctionMode, 0, 2));
+    c.draineAlpha = std::max(settings.draineAlpha, 0.0f);
+    const CloudPhaseParameters cloudPhase = makeCloudPhaseParameters(settings.cloudDiameterMicrons);
+    c.cloudPhaseGhg = cloudPhase.gHg;
+    c.cloudPhaseGd = cloudPhase.gD;
+    c.cloudPhaseAlpha = cloudPhase.alpha;
+    c.cloudPhaseWeight = cloudPhase.weightD;
     return c;
 }
 
@@ -1069,6 +1199,7 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
 
     auto previousTime = std::chrono::steady_clock::now();
     const auto startTime = previousTime;
+    float smoothedFrameSeconds = 1.0f / 60.0f;
 
     while (!glfwWindowShouldClose(window) && (maxFrames == 0 || frameIndex < maxFrames)) {
         glfwPollEvents();
@@ -1077,6 +1208,10 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
         const float dt = std::chrono::duration<float>(now - previousTime).count();
         previousTime = now;
         const float timeSeconds = std::chrono::duration<float>(now - startTime).count();
+        if (dt > 0.0f) {
+            const float blend = dt > 0.25f ? 1.0f : 0.08f;
+            smoothedFrameSeconds += (dt - smoothedFrameSeconds) * blend;
+        }
 
         const bool f1 = keyPressed(window, GLFW_KEY_F1);
         if (f1 && !lastF1) {
@@ -1105,7 +1240,9 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
         ImGui::NewFrame();
 
         if (showUi) {
-            resetHistory = buildUi(settings, volume) || resetHistory;
+            const float frameMs = smoothedFrameSeconds * 1000.0f;
+            const float fps = smoothedFrameSeconds > 1.0e-6f ? 1.0f / smoothedFrameSeconds : 0.0f;
+            resetHistory = buildUi(settings, volume, fps, frameMs) || resetHistory;
         }
 
         ImGui::Render();
@@ -1128,7 +1265,7 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
             ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
         }
 
-        throwIfFailed(d3d.swapchain->Present(1, 0), "IDXGISwapChain::Present failed");
+        throwIfFailed(d3d.swapchain->Present(0, 0), "IDXGISwapChain::Present failed");
 
         resetHistory = false;
         ++frameIndex;

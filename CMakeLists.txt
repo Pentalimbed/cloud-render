@@ -52,7 +52,14 @@ endwhile()
 add_custom_target(cloud_render_shaders ALL DEPENDS ${COMPILED_SHADERS})
 
 add_executable(cloud_render
+    src/core.hpp
     src/main.cpp
+    src/renderer.cpp
+    src/renderer.hpp
+    src/ui.cpp
+    src/ui.hpp
+    src/volume_io.cpp
+    src/volume_io.hpp
 )
 
 add_dependencies(cloud_render cloud_render_shaders)

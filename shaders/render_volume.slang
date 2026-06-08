@@ -84,7 +84,8 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     pnanovdb_coord_t coord = ijk;
     pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
-    gVolumeSampleCount += 1u;
+    gVolumeSampleCount += pnanovdb_readaccessor_is_active(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord); // this is accurate but has heavy overhead!
+    // gVolumeSampleCount += 1;
 #endif
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }

@@ -62,7 +62,7 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
 
     if (volume) {
         ImGui::TextUnformatted(volume->gridName.c_str());
-        ImGui::Text("Max density %.6g", volume->maxDensity);
+        ImGui::Text("Max mixing ratio %.6g kg/kg", volume->maxDensity);
         controlHint("Maximum active voxel density in the loaded volume before the UI Density multiplier.");
         ImGui::Text("Scaled max density %.6g", volume->maxDensity * settings.densityMultiplier);
         controlHint("Maximum active voxel density after the current UI Density multiplier.");
@@ -90,7 +90,7 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
         actions.settingsChanged |= ImGui::Combo("Path history", &settings.pathHistoryMode, historyModes, 2);
         controlHint("Accumulation averages path-traced samples until the camera or settings change.");
     }
-    actions.settingsChanged |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 20.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    actions.settingsChanged |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 200.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     controlHint("Scales sampled VDB density before absorption and scattering.");
     actions.settingsChanged |= controlVec3Color("Absorption", settings.absorption);
     controlHint("Per-channel extinction that removes light in the medium.");

@@ -36,7 +36,7 @@ struct RenderSettings {
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     int debugViewMode = 0;
 #endif
-    float densityMultiplier = 1.0f;
+    float densityMultiplier = 100.0f;
     Vec3 absorption = {0.08f, 0.08f, 0.08f};
     Vec3 scattering = {0.65f, 0.70f, 0.78f};
     Vec3 lightDirection = {-0.35f, 0.3f, 0.8f};

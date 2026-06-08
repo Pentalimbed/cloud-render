@@ -250,8 +250,44 @@ void includePoint(Bounds& bounds, Vec3 point)
     bounds.max.z = std::max(bounds.max.z, point.z);
 }
 
+Bounds uniformScaleTranslateActiveWorldBounds(
+    const openvdb::math::UniformScaleTranslateMap& map,
+    const openvdb::CoordBBox& activeBBox)
+{
+    const openvdb::Coord minCoord = activeBBox.min();
+    const openvdb::Coord maxCoord = activeBBox.max();
+    const openvdb::Vec3d indexMin(
+        static_cast<double>(minCoord.x()) - 0.5,
+        static_cast<double>(minCoord.y()) - 0.5,
+        static_cast<double>(minCoord.z()) - 0.5);
+    const openvdb::Vec3d indexMax(
+        static_cast<double>(maxCoord.x()) + 0.5,
+        static_cast<double>(maxCoord.y()) + 0.5,
+        static_cast<double>(maxCoord.z()) + 0.5);
+
+    const Vec3 first = toVec3(map.applyMap(indexMin));
+    Bounds bounds{first, first};
+    const double xs[] = {indexMin.x(), indexMax.x()};
+    const double ys[] = {indexMin.y(), indexMax.y()};
+    const double zs[] = {indexMin.z(), indexMax.z()};
+
+    for (double x : xs) {
+        for (double y : ys) {
+            for (double z : zs) {
+                includePoint(bounds, toVec3(map.applyMap(openvdb::Vec3d(x, y, z))));
+            }
+        }
+    }
+
+    return bounds;
+}
+
 Bounds activeWorldBounds(const openvdb::FloatGrid& grid, const openvdb::CoordBBox& activeBBox)
 {
+    if (const auto map = grid.transform().constMap<openvdb::math::UniformScaleTranslateMap>()) {
+        return uniformScaleTranslateActiveWorldBounds(*map, activeBBox);
+    }
+
     openvdb::Coord minCoord = activeBBox.min();
     openvdb::Coord maxCoord = activeBBox.max();
     maxCoord.offsetBy(1);
@@ -285,8 +321,10 @@ int shortestAxis(Vec3 extent)
     return axis;
 }
 
-VolumePlacement makeVolumePlacement(Vec3 nativeWorldMin, Vec3 nativeWorldMax)
+VolumePlacement makeVolumePlacement(Bounds nativePlacementBounds)
 {
+    const Vec3 nativeWorldMin = nativePlacementBounds.min;
+    const Vec3 nativeWorldMax = nativePlacementBounds.max;
     const Vec3 nativeExtent = nativeWorldMax - nativeWorldMin;
     const int upAxis = shortestAxis(nativeExtent);
     const int renderXAxis = (upAxis + 2) % 3;
@@ -327,15 +365,14 @@ void applyVolumePlacement(openvdb::FloatGrid& grid, Volume& volume, const openvd
     }
 
     const Bounds nativeWorldBounds = activeWorldBounds(grid, activeBBox);
-    const VolumePlacement placement = makeVolumePlacement(nativeWorldBounds.min, nativeWorldBounds.max);
+    const VolumePlacement placement = makeVolumePlacement(nativeWorldBounds);
     const auto oldIndexToNative = grid.transform().baseMap()->getAffineMap()->getMat4();
     grid.setTransform(openvdb::math::Transform::createLinearTransform(oldIndexToNative * placement.nativeToRender));
 
-    const Bounds renderWorldBounds = activeWorldBounds(grid, activeBBox);
     volume.nativeWorldMin = placement.nativeWorldMin;
     volume.nativeWorldMax = placement.nativeWorldMax;
-    volume.worldMin = renderWorldBounds.min;
-    volume.worldMax = renderWorldBounds.max;
+    volume.worldMin = placement.worldMin;
+    volume.worldMax = placement.worldMax;
     volume.nativeUpAxis = placement.nativeUpAxis;
 }
 

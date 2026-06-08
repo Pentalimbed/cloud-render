@@ -21,7 +21,7 @@ struct GLFWwindow;
 namespace cloud_render {
 
 struct Camera {
-    Vec3 position;
+    Vec3 position = {0.0f, 0.0f, 0.0f};
     float yaw = 0.0f;
     float pitch = 0.0f;
     float fovYRadians = 50.0f * 3.14159265358979323846f / 180.0f;
@@ -159,9 +159,11 @@ Camera makeInitialCamera(Vec3 worldMin, Vec3 worldMax);
 bool keyPressed(GLFWwindow* window, int key);
 bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled, float moveScale);
 
-D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const Volume& volume, const std::filesystem::path& shaderDir);
+D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const std::filesystem::path& shaderDir);
 void resize(D3DState& d3d, uint32_t width, uint32_t height);
 void checkShaders(const std::filesystem::path& shaderDir);
+void setVolume(D3DState& d3d, const Volume& volume);
+void clearBackbuffer(D3DState& d3d);
 
 RenderConstants makeConstants(
     const Camera& camera,

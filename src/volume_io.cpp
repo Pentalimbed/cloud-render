@@ -9,7 +9,6 @@
 #include <nanovdb/tools/CreateNanoGrid.h>
 #include <nanovdb/tools/NanoToOpenVDB.h>
 #include <openvdb/io/File.h>
-#include <openvdb/math/Mat4.h>
 #include <openvdb/openvdb.h>
 
 namespace cloud_render {
@@ -32,7 +31,7 @@ struct VolumePlacement {
     Vec3 nativeWorldMax;
     Vec3 worldMin;
     Vec3 worldMax;
-    openvdb::math::Mat4d nativeToRender = openvdb::math::Mat4d::identity();
+    Matrix4 nativeToRender = identityMatrix4();
     int nativeUpAxis = 2;
 };
 
@@ -50,6 +49,17 @@ void includePoint(Bounds& bounds, Vec3 point)
     bounds.max.x = std::max(bounds.max.x, point.x);
     bounds.max.y = std::max(bounds.max.y, point.y);
     bounds.max.z = std::max(bounds.max.z, point.z);
+}
+
+openvdb::math::Mat4d toOpenVdbMatrix(const Matrix4& matrix)
+{
+    openvdb::math::Mat4d result = openvdb::math::Mat4d::zero();
+    for (int row = 0; row < 4; ++row) {
+        for (int column = 0; column < 4; ++column) {
+            result[row][column] = matrix.m[row][column];
+        }
+    }
+    return result;
 }
 
 Bounds uniformScaleTranslateActiveWorldBounds(
@@ -155,14 +165,14 @@ VolumePlacement makeVolumePlacement(Bounds nativePlacementBounds)
         component(nativeExtent, upAxis),
     };
 
-    openvdb::math::Mat4d nativeToRender = openvdb::math::Mat4d::zero();
-    nativeToRender[renderXAxis][0] = 1.0;
-    nativeToRender[renderYAxis][1] = 1.0;
-    nativeToRender[upAxis][2] = 1.0;
-    nativeToRender[3][0] = -static_cast<double>(component(nativeOrigin, renderXAxis));
-    nativeToRender[3][1] = -static_cast<double>(component(nativeOrigin, renderYAxis));
-    nativeToRender[3][2] = -static_cast<double>(component(nativeOrigin, upAxis));
-    nativeToRender[3][3] = 1.0;
+    Matrix4 nativeToRender = zeroMatrix4();
+    nativeToRender.m[renderXAxis][0] = 1.0f;
+    nativeToRender.m[renderYAxis][1] = 1.0f;
+    nativeToRender.m[upAxis][2] = 1.0f;
+    nativeToRender.m[3][0] = -component(nativeOrigin, renderXAxis);
+    nativeToRender.m[3][1] = -component(nativeOrigin, renderYAxis);
+    nativeToRender.m[3][2] = -component(nativeOrigin, upAxis);
+    nativeToRender.m[3][3] = 1.0f;
 
     VolumePlacement placement;
     placement.nativeWorldMin = nativeWorldMin;
@@ -183,7 +193,7 @@ void applyVolumePlacement(openvdb::FloatGrid& grid, Volume& volume, const openvd
     const Bounds nativeWorldBounds = activeWorldBounds(grid, activeBBox);
     const VolumePlacement placement = makeVolumePlacement(nativeWorldBounds);
     const auto oldIndexToNative = grid.transform().baseMap()->getAffineMap()->getMat4();
-    grid.setTransform(openvdb::math::Transform::createLinearTransform(oldIndexToNative * placement.nativeToRender));
+    grid.setTransform(openvdb::math::Transform::createLinearTransform(oldIndexToNative * toOpenVdbMatrix(placement.nativeToRender)));
 
     volume.nativeWorldMin = placement.nativeWorldMin;
     volume.nativeWorldMax = placement.nativeWorldMax;

@@ -14,13 +14,16 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <cstdint>
 #include <exception>
 #include <filesystem>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace cloud_render {
 namespace {
@@ -59,14 +62,45 @@ public:
     GlfwRuntime& operator=(const GlfwRuntime&) = delete;
 };
 
+void copyPathToUi(VolumeUiState& state, const std::filesystem::path& path)
+{
+    const std::string text = path.string();
+    state.path.fill('\0');
+    const size_t count = std::min(text.size(), state.path.size() - 1);
+    std::memcpy(state.path.data(), text.data(), count);
+}
+
+bool loadVolumeIntoRenderer(
+    const std::filesystem::path& path,
+    D3DState& d3d,
+    std::optional<Volume>& currentVolume,
+    Camera& camera,
+    VolumeUiState& volumeUi)
+{
+    try {
+        Volume loadedVolume = loadVolume(path);
+        setVolume(d3d, loadedVolume);
+        currentVolume = std::move(loadedVolume);
+        camera = makeInitialCamera(currentVolume->worldMin, currentVolume->worldMax);
+        volumeUi.status = "Loaded " + path.string();
+        volumeUi.statusIsError = false;
+
+        std::cout << "Loaded " << path << " grid=" << currentVolume->gridName << " bytes=" << currentVolume->handle.size()
+                  << " native_up=+" << axisName(currentVolume->nativeUpAxis) << "\n";
+        return true;
+    } catch (const std::exception& e) {
+        volumeUi.status = e.what();
+        volumeUi.statusIsError = true;
+        std::cerr << e.what() << "\n";
+        return false;
+    }
+}
+
 } // namespace
 
-void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
+void run(const std::optional<std::filesystem::path>& initialVolumePath, uint32_t maxFrames = 0)
 {
     OpenVdbRuntime openvdbRuntime;
-    Volume volume = loadVolume(volumePath);
-    std::cout << "Loaded " << volumePath << " grid=" << volume.gridName << " bytes=" << volume.handle.size()
-              << " native_up=+" << axisName(volume.nativeUpAxis) << "\n";
 
     GlfwRuntime glfw;
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -84,7 +118,6 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
         hwnd,
         static_cast<uint32_t>(std::max(framebufferWidth, 1)),
         static_cast<uint32_t>(std::max(framebufferHeight, 1)),
-        volume,
         executableDirectory() / "shaders");
 
     IMGUI_CHECKVERSION();
@@ -93,12 +126,22 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
     ImGui_ImplGlfw_InitForOther(window, true);
     ImGui_ImplDX11_Init(d3d.device.Get(), d3d.context.Get());
 
-    Camera camera = makeInitialCamera(volume.worldMin, volume.worldMax);
+    std::optional<Volume> volume;
+    VolumeUiState volumeUi;
+    if (initialVolumePath) {
+        copyPathToUi(volumeUi, *initialVolumePath);
+    }
+
+    Camera camera;
     RenderSettings settings;
     bool showUi = true;
     bool lastF1 = false;
     bool resetHistory = true;
     uint32_t frameIndex = 0;
+
+    if (initialVolumePath) {
+        resetHistory = loadVolumeIntoRenderer(*initialVolumePath, d3d, volume, camera, volumeUi) || resetHistory;
+    }
 
     auto previousTime = std::chrono::steady_clock::now();
     const auto startTime = previousTime;
@@ -135,7 +178,8 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
             resetHistory = true;
         }
 
-        const bool cameraMoved = updateCamera(window, camera, dt, !showUi, volumeMoveScale(volume.worldMin, volume.worldMax));
+        const float moveScale = volume ? volumeMoveScale(volume->worldMin, volume->worldMax) : 1.0f;
+        const bool cameraMoved = updateCamera(window, camera, dt, !showUi, moveScale);
         resetHistory = resetHistory || cameraMoved;
 
         ImGui_ImplDX11_NewFrame();
@@ -145,22 +189,30 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
         if (showUi) {
             const float frameMs = smoothedFrameSeconds * 1000.0f;
             const float fps = smoothedFrameSeconds > 1.0e-6f ? 1.0f / smoothedFrameSeconds : 0.0f;
-            resetHistory = buildUi(settings, volume, fps, frameMs) || resetHistory;
+            const UiActions uiActions = buildUi(settings, volume ? &*volume : nullptr, volumeUi, fps, frameMs);
+            resetHistory = uiActions.settingsChanged || resetHistory;
+            if (uiActions.loadVolumeRequested) {
+                resetHistory = loadVolumeIntoRenderer(std::filesystem::path(volumeUi.path.data()), d3d, volume, camera, volumeUi) || resetHistory;
+            }
         }
 
         ImGui::Render();
 
-        const RenderConstants constants = makeConstants(
-            camera,
-            settings,
-            volume,
-            d3d.width,
-            d3d.height,
-            frameIndex,
-            timeSeconds,
-            resetHistory);
+        if (volume) {
+            const RenderConstants constants = makeConstants(
+                camera,
+                settings,
+                *volume,
+                d3d.width,
+                d3d.height,
+                frameIndex,
+                timeSeconds,
+                resetHistory);
 
-        dispatchRenderer(d3d, constants);
+            dispatchRenderer(d3d, constants);
+        } else {
+            clearBackbuffer(d3d);
+        }
 
         ID3D11RenderTargetView* rtv = d3d.backbufferRtv.Get();
         d3d.context->OMSetRenderTargets(1, &rtv, nullptr);
@@ -197,14 +249,17 @@ int main(int argc, char** argv)
 {
     try {
         if (argc > 1 && std::string_view(argv[1]) == "--check") {
-            const std::filesystem::path volumePath = argc > 2 ? std::filesystem::path(argv[2]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
+            if (argc <= 2) {
+                throw std::runtime_error("--check requires a .vdb or .nvdb path");
+            }
+            const std::filesystem::path volumePath = argv[2];
             cloud_render::runCheck(volumePath);
         } else if (argc > 1 && std::string_view(argv[1]) == "--frames") {
             const uint32_t maxFrames = argc > 2 ? static_cast<uint32_t>(std::stoul(argv[2])) : 1u;
-            const std::filesystem::path volumePath = argc > 3 ? std::filesystem::path(argv[3]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
+            const std::optional<std::filesystem::path> volumePath = argc > 3 ? std::optional<std::filesystem::path>(argv[3]) : std::nullopt;
             cloud_render::run(volumePath, maxFrames);
         } else {
-            const std::filesystem::path volumePath = argc > 1 ? std::filesystem::path(argv[1]) : std::filesystem::path("F:\\Dev\\projects\\cloud-render\\cabauw.vdb");
+            const std::optional<std::filesystem::path> volumePath = argc > 1 ? std::optional<std::filesystem::path>(argv[1]) : std::nullopt;
             cloud_render::run(volumePath);
         }
         return 0;

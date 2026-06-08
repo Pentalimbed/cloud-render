@@ -3,63 +3,83 @@
 #include <algorithm>
 #include <cmath>
 
+#include <DirectXMath.h>
+
 namespace cloud_render {
 
-struct Vec3 {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-};
+using Vec3 = DirectX::XMFLOAT3;
+using Matrix4 = DirectX::XMFLOAT4X4;
+
+inline DirectX::XMVECTOR loadVec3(Vec3 v)
+{
+    return DirectX::XMLoadFloat3(&v);
+}
+
+inline Vec3 storeVec3(DirectX::FXMVECTOR v)
+{
+    Vec3 result;
+    DirectX::XMStoreFloat3(&result, v);
+    return result;
+}
 
 inline Vec3 operator+(Vec3 a, Vec3 b)
 {
-    return {a.x + b.x, a.y + b.y, a.z + b.z};
+    return storeVec3(DirectX::XMVectorAdd(loadVec3(a), loadVec3(b)));
 }
 
 inline Vec3 operator-(Vec3 a, Vec3 b)
 {
-    return {a.x - b.x, a.y - b.y, a.z - b.z};
+    return storeVec3(DirectX::XMVectorSubtract(loadVec3(a), loadVec3(b)));
 }
 
 inline Vec3 operator*(Vec3 a, float s)
 {
-    return {a.x * s, a.y * s, a.z * s};
+    return storeVec3(DirectX::XMVectorScale(loadVec3(a), s));
 }
 
 inline Vec3 operator/(Vec3 a, float s)
 {
-    return {a.x / s, a.y / s, a.z / s};
+    return storeVec3(DirectX::XMVectorScale(loadVec3(a), 1.0f / s));
 }
 
 inline float dot(Vec3 a, Vec3 b)
 {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
+    return DirectX::XMVectorGetX(DirectX::XMVector3Dot(loadVec3(a), loadVec3(b)));
 }
 
 inline Vec3 cross(Vec3 a, Vec3 b)
 {
-    return {
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x,
-    };
+    return storeVec3(DirectX::XMVector3Cross(loadVec3(a), loadVec3(b)));
 }
 
 inline float length(Vec3 v)
 {
-    return std::sqrt(dot(v, v));
+    return DirectX::XMVectorGetX(DirectX::XMVector3Length(loadVec3(v)));
 }
 
 inline Vec3 normalize(Vec3 v)
 {
-    const float len = length(v);
-    if (len <= 1.0e-8f) {
+    const DirectX::XMVECTOR vector = loadVec3(v);
+    const float lengthSquared = DirectX::XMVectorGetX(DirectX::XMVector3LengthSq(vector));
+    if (lengthSquared <= 1.0e-16f) {
         return {0.0f, 0.0f, 1.0f};
     }
-    return v / len;
+    return storeVec3(DirectX::XMVector3Normalize(vector));
 }
 
-inline constexpr Vec3 kWorldUp = {0.0f, 0.0f, 1.0f};
+inline const Vec3 kWorldUp = {0.0f, 0.0f, 1.0f};
+
+inline Matrix4 identityMatrix4()
+{
+    Matrix4 matrix;
+    DirectX::XMStoreFloat4x4(&matrix, DirectX::XMMatrixIdentity());
+    return matrix;
+}
+
+inline Matrix4 zeroMatrix4()
+{
+    return {};
+}
 
 inline float maxComponent(Vec3 v)
 {

@@ -9,6 +9,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <d3dcompiler.h>
@@ -193,14 +194,19 @@ void createVolumeBuffer(D3DState& d3d, const Volume& volume)
     D3D11_SUBRESOURCE_DATA data = {};
     data.pSysMem = words.data();
 
-    throwIfFailed(d3d.device->CreateBuffer(&desc, &data, d3d.volumeBuffer.GetAddressOf()), "CreateBuffer failed for NanoVDB payload");
+    ComPtr<ID3D11Buffer> volumeBuffer;
+    throwIfFailed(d3d.device->CreateBuffer(&desc, &data, volumeBuffer.GetAddressOf()), "CreateBuffer failed for NanoVDB payload");
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_UNKNOWN;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Buffer.FirstElement = 0;
     srvDesc.Buffer.NumElements = wordCount;
-    throwIfFailed(d3d.device->CreateShaderResourceView(d3d.volumeBuffer.Get(), &srvDesc, d3d.volumeSrv.GetAddressOf()), "CreateShaderResourceView failed for NanoVDB payload");
+    ComPtr<ID3D11ShaderResourceView> volumeSrv;
+    throwIfFailed(d3d.device->CreateShaderResourceView(volumeBuffer.Get(), &srvDesc, volumeSrv.GetAddressOf()), "CreateShaderResourceView failed for NanoVDB payload");
+
+    d3d.volumeBuffer = std::move(volumeBuffer);
+    d3d.volumeSrv = std::move(volumeSrv);
 }
 
 void unbindComputeResources(ID3D11DeviceContext* context)
@@ -348,7 +354,7 @@ bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled,
     return moved;
 }
 
-D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const Volume& volume, const std::filesystem::path& shaderDir)
+D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const std::filesystem::path& shaderDir)
 {
     D3DState d3d;
 
@@ -413,7 +419,6 @@ D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const Volume& vol
     constantDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
     throwIfFailed(d3d.device->CreateBuffer(&constantDesc, nullptr, d3d.constantsBuffer.GetAddressOf()), "CreateBuffer failed for constants");
 
-    createVolumeBuffer(d3d, volume);
     d3d.shaders = loadShaders(d3d.device.Get(), shaderDir);
     return d3d;
 }
@@ -443,6 +448,19 @@ void checkShaders(const std::filesystem::path& shaderDir)
     compileShaderBytecode(shaderDir / "renderVolume.hlsl", "renderVolume");
     compileShaderBytecode(shaderDir / "temporalDenoise.hlsl", "temporalDenoise");
     compileShaderBytecode(shaderDir / "tonemap.hlsl", "tonemap");
+}
+
+void setVolume(D3DState& d3d, const Volume& volume)
+{
+    unbindComputeResources(d3d.context.Get());
+    createVolumeBuffer(d3d, volume);
+    d3d.historyIndex = 0;
+}
+
+void clearBackbuffer(D3DState& d3d)
+{
+    const float color[] = {0.015f, 0.016f, 0.018f, 1.0f};
+    d3d.context->ClearRenderTargetView(d3d.backbufferRtv.Get(), color);
 }
 
 RenderConstants makeConstants(
@@ -500,6 +518,11 @@ RenderConstants makeConstants(
 
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
+    if (!d3d.volumeSrv) {
+        clearBackbuffer(d3d);
+        return;
+    }
+
     d3d.context->UpdateSubresource(d3d.constantsBuffer.Get(), 0, nullptr, &constants, 0, 0);
 
     ID3D11Buffer* cb = d3d.constantsBuffer.Get();

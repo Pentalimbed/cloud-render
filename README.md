@@ -12,8 +12,10 @@ cmake --build --preset windows-msvc-vcpkg
 Run:
 
 ```powershell
-.\build\windows-vs-vcpkg\RelWithDebInfo\cloud_render.exe .\cabauw.vdb
+.\build\windows-vs-vcpkg\RelWithDebInfo\cloud_render.exe
 ```
+
+Use the `VDB path` control in the UI to load or reload `.vdb` and `.nvdb` files. You can still pass an initial path on the command line.
 
 Headless smoke check:
 

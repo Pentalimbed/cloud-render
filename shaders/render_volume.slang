@@ -1,7 +1,7 @@
 #include "bindings.slang"
 
 #define PNANOVDB_HLSL
-#include "../PNanoVDB.h"
+#include "PNanoVDB.h"
 
 static const float Pi = 3.14159265358979323846f;
 static const float Inv4Pi = 0.07957747154594767f;
@@ -138,12 +138,31 @@ float phaseHenyeyGreenstein(float cosTheta)
     return Inv4Pi * (1.0f - g * g) / (denom * sqrt(denom));
 }
 
-float3 sampleSphere(inout uint rng)
+void makeBasis(float3 n, out float3 tangent, out float3 bitangent)
 {
-    float z = 1.0f - 2.0f * rand01(rng);
+    float3 helper = abs(n.y) < 0.999f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+    tangent = safeNormalize(cross(helper, n));
+    bitangent = cross(n, tangent);
+}
+
+float3 sampleHenyeyGreensteinDirection(float3 incomingDirection, inout uint rng)
+{
+    float g = clamp(anisotropy, -0.95f, 0.95f);
+    float u = rand01(rng);
+    float cosTheta;
+    if (abs(g) < 1.0e-3f) {
+        cosTheta = 1.0f - 2.0f * u;
+    } else {
+        float sq = (1.0f - g * g) / max(1.0f - g + 2.0f * g * u, 1.0e-4f);
+        cosTheta = clamp((1.0f + g * g - sq * sq) / (2.0f * g), -1.0f, 1.0f);
+    }
+
+    float sinTheta = sqrt(max(0.0f, 1.0f - cosTheta * cosTheta));
     float phi = 2.0f * Pi * rand01(rng);
-    float r = sqrt(max(0.0f, 1.0f - z * z));
-    return float3(r * cos(phi), z, r * sin(phi));
+    float3 t;
+    float3 b;
+    makeBasis(safeNormalize(incomingDirection), t, b);
+    return safeNormalize(t * (cos(phi) * sinTheta) + b * (sin(phi) * sinTheta) + safeNormalize(incomingDirection) * cosTheta);
 }
 
 float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng)
@@ -186,7 +205,14 @@ float3 renderRaymarchSample(float3 rayOrigin, float3 rayDirection, pnanovdb_grid
     return radiance;
 }
 
-bool sampleMediumCollision(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, inout uint rng, out float3 position)
+bool sampleVolPathEvent(
+    float3 rayOrigin,
+    float3 rayDirection,
+    pnanovdb_grid_handle_t grid,
+    pnanovdb_root_handle_t root,
+    inout uint rng,
+    inout float3 throughput,
+    out float3 position)
 {
     float t0;
     float t1;
@@ -196,13 +222,16 @@ bool sampleMediumCollision(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_
     }
 
     t0 = max(t0, 0.0f);
-    float maxSigmaT = max(max3(absorption + scattering), 1.0e-4f);
-    float majorant = max(densityMajorant * densityMultiplier * maxSigmaT, 1.0e-4f);
+    float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
+    float majorant = max(densityMajorant * max3(sigmaT), 1.0e-4f);
     float t = t0;
 
     pnanovdb_readaccessor_t accessor;
     pnanovdb_readaccessor_init(accessor, root);
 
+    // Volpathmis-style null-collision tracking: sample free flights from a scalar
+    // majorant, classify sampled points as null or real medium events, and carry
+    // the corresponding throughput ratio forward.
     [loop]
     for (uint step = 0u; step < max(1u, raymarchSteps) && t < t1; ++step) {
         t += -log(max(rand01(rng), 1.0e-6f)) / majorant;
@@ -212,9 +241,20 @@ bool sampleMediumCollision(float3 rayOrigin, float3 rayDirection, pnanovdb_grid_
 
         position = rayOrigin + rayDirection * t;
         float density = sampleDensityWorld(position, grid, accessor, rng);
-        float accept = saturate(density * maxSigmaT / majorant);
-        if (rand01(rng) < accept) {
+        float3 localSigmaT = density * sigmaT;
+        float realProb = saturate(max3(localSigmaT) / majorant);
+
+        if (realProb > 0.0f && rand01(rng) < realProb) {
+            float3 scatterWeight = density * scattering / (majorant * max(realProb, 1.0e-4f));
+            throughput *= scatterWeight;
             return true;
+        }
+
+        float nullProb = max(1.0f - realProb, 1.0e-4f);
+        float3 nullWeight = max((majorant - localSigmaT) / (majorant * nullProb), float3(0.0f, 0.0f, 0.0f));
+        throughput *= nullWeight;
+        if (max3(throughput) < 1.0e-4f) {
+            return false;
         }
     }
 
@@ -225,27 +265,31 @@ float3 renderPathTraceSample(float3 rayOrigin, float3 rayDirection, pnanovdb_gri
 {
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
-    float3 sigmaT = max(absorption + scattering, float3(1.0e-4f, 1.0e-4f, 1.0e-4f));
-    float3 albedo = saturate(scattering / sigmaT);
 
     [loop]
     for (uint bounce = 0u; bounce < max(1u, pathDepth); ++bounce) {
         float3 position;
-        if (!sampleMediumCollision(rayOrigin, rayDirection, grid, root, rng, position)) {
+        if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, rng, throughput, position)) {
             break;
         }
 
+        // Directional-light next-event estimate. With a single delta directional
+        // light, the light-sampling MIS branch from volpathmis degenerates to
+        // weight 1; phase-sampled paths cannot hit this light by solid angle.
         float3 lightTr = estimateLightTransmittance(position, grid, root, rng);
         float phase = phaseHenyeyGreenstein(dot(safeNormalize(lightDirection), -rayDirection));
-        radiance += throughput * lightColor * lightTr * scattering * phase;
+        radiance += throughput * lightColor * lightTr * phase;
 
-        throughput *= albedo;
-        if (max3(throughput) < 0.01f) {
-            break;
-        }
-
-        rayDirection = sampleSphere(rng);
+        rayDirection = sampleHenyeyGreensteinDirection(rayDirection, rng);
         rayOrigin = position + rayDirection * 0.02f;
+
+        if (bounce >= 2u) {
+            float continueProb = clamp(max3(throughput), 0.05f, 0.95f);
+            if (rand01(rng) > continueProb) {
+                break;
+            }
+            throughput /= continueProb;
+        }
     }
 
     return radiance;

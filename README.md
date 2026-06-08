@@ -28,4 +28,6 @@ One-frame D3D11 smoke run:
 ```
 
 The renderer converts `.vdb` float grids to NanoVDB on load. `.nvdb` files are uploaded as NanoVDB payloads directly.
-Slang sources are split by pass under `shaders/`; CMake emits per-pass HLSL files that the D3D11 app compiles at startup.
+Slang sources are split by pass under `shaders/`, with `PNanoVDB.h` colocated there; CMake emits per-pass HLSL files that the D3D11 app compiles at startup.
+
+Press `F1` to toggle the UI. With the UI hidden, fly controls use mouse look plus `WASD/QE`, with movement scaled to the loaded volume bounds. In path tracer mode, the `Path history` control switches between temporal denoising and progressive accumulation.

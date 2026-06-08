@@ -33,7 +33,7 @@ while(SHADER_PASSES)
             -I "${CMAKE_CURRENT_SOURCE_DIR}"
             "${source}"
             -o "${output}"
-        DEPENDS "${source}" "${SHADER_COMMON}" "${CMAKE_CURRENT_SOURCE_DIR}/PNanoVDB.h"
+        DEPENDS "${source}" "${SHADER_COMMON}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/PNanoVDB.h"
         VERBATIM
     )
     list(APPEND COMPILED_SHADERS "${output}")

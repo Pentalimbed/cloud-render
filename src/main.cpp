@@ -104,6 +104,12 @@ Vec3 lerp(Vec3 a, Vec3 b, float t)
     return a * (1.0f - t) + b * t;
 }
 
+float volumeMoveScale(Vec3 worldMin, Vec3 worldMax)
+{
+    const Vec3 extent = worldMax - worldMin;
+    return std::max(maxComponent(extent), 1.0f);
+}
+
 void throwIfFailed(HRESULT hr, std::string_view message)
 {
     if (FAILED(hr)) {
@@ -263,12 +269,12 @@ struct Camera {
 
     Vec3 right() const
     {
-        return normalize(cross(forward(), {0.0f, 1.0f, 0.0f}));
+        return normalize(cross({0.0f, 1.0f, 0.0f}, forward()));
     }
 
     Vec3 up() const
     {
-        return normalize(cross(right(), forward()));
+        return normalize(cross(forward(), right()));
     }
 };
 
@@ -299,6 +305,7 @@ struct RenderSettings {
     float temporalBlend = 0.88f;
     float stepJitter = 1.0f;
     float densityMajorant = 1.0f;
+    int pathHistoryMode = 0;
     int raymarchSteps = 160;
     int shadowSteps = 48;
     int pathSamples = 1;
@@ -344,7 +351,7 @@ struct RenderConstants {
     float densityMajorant;
     float timeSeconds;
     uint32_t resetHistory;
-    float pad0;
+    uint32_t pathHistoryMode;
 };
 
 static_assert(sizeof(RenderConstants) % 16 == 0);
@@ -695,14 +702,19 @@ bool keyPressed(GLFWwindow* window, int key)
     return glfwGetKey(window, key) == GLFW_PRESS;
 }
 
-bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled)
+bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled, float moveScale)
 {
+    static bool wasFlyEnabled = false;
+    static double lastX = 0.0;
+    static double lastY = 0.0;
+
     if (!flyEnabled) {
+        wasFlyEnabled = false;
         return false;
     }
 
     bool moved = false;
-    const float baseSpeed = keyPressed(window, GLFW_KEY_LEFT_SHIFT) ? 65.0f : 18.0f;
+    const float baseSpeed = keyPressed(window, GLFW_KEY_LEFT_SHIFT) ? moveScale * 1.2f : moveScale * 0.25f;
     const float speed = baseSpeed * dt;
 
     Vec3 delta = {};
@@ -730,16 +742,14 @@ bool updateCamera(GLFWwindow* window, Camera& camera, float dt, bool flyEnabled)
         moved = true;
     }
 
-    static bool firstMouse = true;
-    static double lastX = 0.0;
-    static double lastY = 0.0;
     double x = 0.0;
     double y = 0.0;
     glfwGetCursorPos(window, &x, &y);
-    if (firstMouse) {
+    if (!wasFlyEnabled) {
         lastX = x;
         lastY = y;
-        firstMouse = false;
+        wasFlyEnabled = true;
+        return moved;
     }
 
     const double dx = x - lastX;
@@ -787,6 +797,10 @@ bool buildUi(RenderSettings& settings, const Volume& volume)
 
     const char* modes[] = {"Ray marching", "Path tracer"};
     changed |= ImGui::Combo("Renderer", &settings.rendererMode, modes, 2);
+    if (settings.rendererMode == 1) {
+        const char* historyModes[] = {"Temporal denoiser", "Accumulation"};
+        changed |= ImGui::Combo("Path history", &settings.pathHistoryMode, historyModes, 2);
+    }
     changed |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 20.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     changed |= controlVec3Color("Absorption", settings.absorption);
     changed |= controlVec3Color("Scattering", settings.scattering);
@@ -845,6 +859,7 @@ RenderConstants makeConstants(
     c.densityMajorant = settings.densityMajorant;
     c.timeSeconds = timeSeconds;
     c.resetHistory = resetHistory ? 1u : 0u;
+    c.pathHistoryMode = static_cast<uint32_t>(std::clamp(settings.pathHistoryMode, 0, 1));
     return c;
 }
 
@@ -934,7 +949,7 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
             resetHistory = true;
         }
 
-        const bool cameraMoved = updateCamera(window, camera, dt, !showUi);
+        const bool cameraMoved = updateCamera(window, camera, dt, !showUi, volumeMoveScale(volume.worldMin, volume.worldMax));
         resetHistory = resetHistory || cameraMoved;
 
         ImGui_ImplDX11_NewFrame();

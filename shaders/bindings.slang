@@ -39,6 +39,18 @@ cbuffer RenderConstants : register(b0)
     float timeSeconds;
     uint resetHistory;
     uint pathHistoryMode;
+
+    float3 volumeRenderToNativeX;
+    float volumeTransformPad0;
+
+    float3 volumeRenderToNativeY;
+    float volumeTransformPad1;
+
+    float3 volumeRenderToNativeZ;
+    float volumeTransformPad2;
+
+    float3 volumeRenderToNativeOrigin;
+    float volumeTransformPad3;
 }
 
 StructuredBuffer<uint> gNanoVdb : register(t0);

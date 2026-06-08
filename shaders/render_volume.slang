@@ -51,6 +51,21 @@ pnanovdb_root_handle_t gridRoot(pnanovdb_grid_handle_t grid)
     return pnanovdb_tree_get_root(gNanoVdb, tree);
 }
 
+float3 renderToNativePoint(float3 p)
+{
+    return volumeRenderToNativeOrigin
+        + volumeRenderToNativeX * p.x
+        + volumeRenderToNativeY * p.y
+        + volumeRenderToNativeZ * p.z;
+}
+
+float3 renderToNativeDirection(float3 v)
+{
+    return volumeRenderToNativeX * v.x
+        + volumeRenderToNativeY * v.y
+        + volumeRenderToNativeZ * v.z;
+}
+
 bool clipIndexBounds(float3 origin, float3 direction, float3 bmin, float3 bmax, out float tmin, out float tmax)
 {
     float3 fallback = sign(direction) * float3(1.0e-8f, 1.0e-8f, 1.0e-8f) + float3(1.0e-8f, 1.0e-8f, 1.0e-8f);
@@ -71,8 +86,10 @@ bool clipVolume(pnanovdb_grid_handle_t grid, pnanovdb_root_handle_t root, float3
     pnanovdb_coord_t bboxMaxCoord = pnanovdb_root_get_bbox_max(gNanoVdb, root);
     float3 bmin = float3(bboxMinCoord);
     float3 bmax = float3(bboxMaxCoord + int3(1, 1, 1));
-    float3 indexOrigin = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, rayOrigin);
-    float3 indexDirection = pnanovdb_grid_world_to_index_dirf(gNanoVdb, grid, rayDirection);
+    float3 nativeOrigin = renderToNativePoint(rayOrigin);
+    float3 nativeDirection = renderToNativeDirection(rayDirection);
+    float3 indexOrigin = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, nativeOrigin);
+    float3 indexDirection = pnanovdb_grid_world_to_index_dirf(gNanoVdb, grid, nativeDirection);
     return clipIndexBounds(indexOrigin, indexDirection, bmin, bmax, tmin, tmax);
 }
 
@@ -99,7 +116,8 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
 
 float sampleDensityWorld(float3 worldPosition, pnanovdb_grid_handle_t grid, inout pnanovdb_readaccessor_t accessor, inout uint rng)
 {
-    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
+    float3 nativeWorldPosition = renderToNativePoint(worldPosition);
+    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, nativeWorldPosition);
     return sampleDensityIndex(indexPosition, accessor, rng) * densityMultiplier;
 }
 

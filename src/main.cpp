@@ -99,6 +99,57 @@ float maxComponent(Vec3 v)
     return std::max({v.x, v.y, v.z});
 }
 
+float component(Vec3 v, int axis)
+{
+    switch (axis) {
+    case 0:
+        return v.x;
+    case 1:
+        return v.y;
+    default:
+        return v.z;
+    }
+}
+
+void setComponent(Vec3& v, int axis, float value)
+{
+    switch (axis) {
+    case 0:
+        v.x = value;
+        break;
+    case 1:
+        v.y = value;
+        break;
+    default:
+        v.z = value;
+        break;
+    }
+}
+
+Vec3 axisVector(int axis)
+{
+    switch (axis) {
+    case 0:
+        return {1.0f, 0.0f, 0.0f};
+    case 1:
+        return {0.0f, 1.0f, 0.0f};
+    default:
+        return {0.0f, 0.0f, 1.0f};
+    }
+}
+
+const char* axisName(int axis)
+{
+    switch (axis) {
+    case 0:
+        return "X";
+    case 1:
+        return "Y";
+    default:
+        return "Z";
+    }
+}
+
 Vec3 lerp(Vec3 a, Vec3 b, float t)
 {
     return a * (1.0f - t) + b * t;
@@ -165,15 +216,101 @@ std::string lowerExtension(const std::filesystem::path& path)
 
 struct Volume {
     nanovdb::GridHandle<nanovdb::HostBuffer> handle;
+    Vec3 nativeWorldMin;
+    Vec3 nativeWorldMax;
     Vec3 worldMin;
     Vec3 worldMax;
+    Vec3 renderToNativeX = {1.0f, 0.0f, 0.0f};
+    Vec3 renderToNativeY = {0.0f, 1.0f, 0.0f};
+    Vec3 renderToNativeZ = {0.0f, 0.0f, 1.0f};
+    Vec3 renderToNativeOrigin;
+    int nativeUpAxis = 1;
     std::string gridName;
+};
+
+struct Bounds {
+    Vec3 min;
+    Vec3 max;
 };
 
 template <typename GridT>
 Vec3 toVec3(const GridT& v)
 {
     return {static_cast<float>(v[0]), static_cast<float>(v[1]), static_cast<float>(v[2])};
+}
+
+void includePoint(Bounds& bounds, Vec3 point)
+{
+    bounds.min.x = std::min(bounds.min.x, point.x);
+    bounds.min.y = std::min(bounds.min.y, point.y);
+    bounds.min.z = std::min(bounds.min.z, point.z);
+    bounds.max.x = std::max(bounds.max.x, point.x);
+    bounds.max.y = std::max(bounds.max.y, point.y);
+    bounds.max.z = std::max(bounds.max.z, point.z);
+}
+
+Bounds activeWorldBounds(const openvdb::FloatGrid& grid, const openvdb::CoordBBox& activeBBox)
+{
+    openvdb::Coord minCoord = activeBBox.min();
+    openvdb::Coord maxCoord = activeBBox.max();
+    maxCoord.offsetBy(1);
+
+    const Vec3 first = toVec3(grid.transform().indexToWorld(minCoord));
+    Bounds bounds{first, first};
+    const int xs[] = {minCoord.x(), maxCoord.x()};
+    const int ys[] = {minCoord.y(), maxCoord.y()};
+    const int zs[] = {minCoord.z(), maxCoord.z()};
+
+    for (int x : xs) {
+        for (int y : ys) {
+            for (int z : zs) {
+                includePoint(bounds, toVec3(grid.transform().indexToWorld(openvdb::Coord(x, y, z))));
+            }
+        }
+    }
+
+    return bounds;
+}
+
+int shortestAxis(Vec3 extent)
+{
+    int axis = 0;
+    if (extent.y < component(extent, axis)) {
+        axis = 1;
+    }
+    if (extent.z < component(extent, axis)) {
+        axis = 2;
+    }
+    return axis;
+}
+
+void applyVolumePlacement(Volume& volume, Vec3 nativeWorldMin, Vec3 nativeWorldMax)
+{
+    volume.nativeWorldMin = nativeWorldMin;
+    volume.nativeWorldMax = nativeWorldMax;
+
+    const Vec3 nativeExtent = nativeWorldMax - nativeWorldMin;
+    const int upAxis = shortestAxis(nativeExtent);
+    const int renderXAxis = (upAxis + 2) % 3;
+    const int renderZAxis = (upAxis + 1) % 3;
+
+    Vec3 nativeOrigin = (nativeWorldMin + nativeWorldMax) * 0.5f;
+    setComponent(nativeOrigin, upAxis, component(nativeWorldMin, upAxis));
+
+    const Vec3 renderExtent = {
+        component(nativeExtent, renderXAxis),
+        component(nativeExtent, upAxis),
+        component(nativeExtent, renderZAxis),
+    };
+
+    volume.renderToNativeX = axisVector(renderXAxis);
+    volume.renderToNativeY = axisVector(upAxis);
+    volume.renderToNativeZ = axisVector(renderZAxis);
+    volume.renderToNativeOrigin = nativeOrigin;
+    volume.nativeUpAxis = upAxis;
+
+    volume.worldMin = {-renderExtent.x * 0.5f, 0.0f, -renderExtent.z * 0.5f};
+    volume.worldMax = {renderExtent.x * 0.5f, renderExtent.y, renderExtent.z * 0.5f};
 }
 
 Volume loadNvdb(const std::filesystem::path& path)
@@ -186,8 +323,7 @@ Volume loadNvdb(const std::filesystem::path& path)
     }
 
     const auto bbox = grid->worldBBox();
-    volume.worldMin = toVec3(bbox.min());
-    volume.worldMax = toVec3(bbox.max());
+    applyVolumePlacement(volume, toVec3(bbox.min()), toVec3(bbox.max()));
     volume.gridName = grid->gridName();
     return volume;
 }
@@ -223,18 +359,14 @@ Volume loadVdb(const std::filesystem::path& path)
         throw std::runtime_error("Selected VDB grid has no active voxels: " + selectedName);
     }
 
-    const openvdb::Vec3d worldMin = grid->transform().indexToWorld(activeBBox.min());
-    openvdb::Coord maxCoord = activeBBox.max();
-    maxCoord.offsetBy(1);
-    const openvdb::Vec3d worldMax = grid->transform().indexToWorld(maxCoord);
+    const Bounds nativeWorldBounds = activeWorldBounds(*grid, activeBBox);
 
     Volume volume;
     volume.handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(*grid);
     if (!volume.handle.grid<float>()) {
         throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float grid");
     }
-    volume.worldMin = toVec3(worldMin);
-    volume.worldMax = toVec3(worldMax);
+    applyVolumePlacement(volume, nativeWorldBounds.min, nativeWorldBounds.max);
     volume.gridName = selectedName;
     return volume;
 }
@@ -280,14 +412,13 @@ struct Camera {
 
 Camera makeInitialCamera(Vec3 worldMin, Vec3 worldMax)
 {
-    const Vec3 center = (worldMin + worldMax) * 0.5f;
     const Vec3 extent = worldMax - worldMin;
-    const float radius = std::max(maxComponent(extent) * 0.5f, 1.0f);
-    const Vec3 position = center + Vec3{0.0f, radius * 0.35f, -radius * 2.2f};
-    const Vec3 dir = normalize(center - position);
+    const float horizontalRadius = std::max(std::max(extent.x, extent.z) * 0.5f, 1.0f);
+    const Vec3 target = {0.0f, std::max(extent.y * 0.45f, 1.0f), horizontalRadius * 0.35f};
+    const Vec3 dir = normalize(target);
 
     Camera camera;
-    camera.position = position;
+    camera.position = {0.0f, 0.0f, 0.0f};
     camera.pitch = std::asin(std::clamp(dir.y, -0.99f, 0.99f));
     camera.yaw = std::atan2(dir.x, dir.z);
     return camera;
@@ -352,6 +483,18 @@ struct RenderConstants {
     float timeSeconds;
     uint32_t resetHistory;
     uint32_t pathHistoryMode;
+
+    Vec3 volumeRenderToNativeX;
+    float _volumeTransformPad0;
+
+    Vec3 volumeRenderToNativeY;
+    float _volumeTransformPad1;
+
+    Vec3 volumeRenderToNativeZ;
+    float _volumeTransformPad2;
+
+    Vec3 volumeRenderToNativeOrigin;
+    float _volumeTransformPad3;
 };
 
 static_assert(sizeof(RenderConstants) % 16 == 0);
@@ -860,6 +1003,10 @@ RenderConstants makeConstants(
     c.timeSeconds = timeSeconds;
     c.resetHistory = resetHistory ? 1u : 0u;
     c.pathHistoryMode = static_cast<uint32_t>(std::clamp(settings.pathHistoryMode, 0, 1));
+    c.volumeRenderToNativeX = volume.renderToNativeX;
+    c.volumeRenderToNativeY = volume.renderToNativeY;
+    c.volumeRenderToNativeZ = volume.renderToNativeZ;
+    c.volumeRenderToNativeOrigin = volume.renderToNativeOrigin;
     return c;
 }
 
@@ -885,7 +1032,8 @@ void run(const std::filesystem::path& volumePath, uint32_t maxFrames = 0)
 {
     openvdb::initialize();
     Volume volume = loadVolume(volumePath);
-    std::cout << "Loaded " << volumePath << " grid=" << volume.gridName << " bytes=" << volume.handle.size() << "\n";
+    std::cout << "Loaded " << volumePath << " grid=" << volume.gridName << " bytes=" << volume.handle.size()
+              << " native_up=+" << axisName(volume.nativeUpAxis) << "\n";
 
     GlfwRuntime glfw;
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
@@ -998,7 +1146,10 @@ void runCheck(const std::filesystem::path& volumePath)
     openvdb::initialize();
     Volume volume = loadVolume(volumePath);
     checkShaders(executableDirectory() / "shaders");
-    std::cout << "OK: " << volumePath << " grid=" << volume.gridName << " nanovdb_bytes=" << volume.handle.size() << "\n";
+    std::cout << "OK: " << volumePath << " grid=" << volume.gridName << " nanovdb_bytes=" << volume.handle.size()
+              << " native_up=+" << axisName(volume.nativeUpAxis)
+              << " render_bounds_min=(" << volume.worldMin.x << "," << volume.worldMin.y << "," << volume.worldMin.z << ")"
+              << " render_bounds_max=(" << volume.worldMax.x << "," << volume.worldMax.y << "," << volume.worldMax.z << ")\n";
     openvdb::uninitialize();
 }
 

@@ -49,10 +49,15 @@ cbuffer RenderConstants : register(b0)
     float cloudPhaseAlpha;
     float cloudPhaseWeight;
 
+    float nubisDetailType;
+    float maxDistanceToZero;
+    float nubisPad0;
+    float nubisPad1;
+
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
     float debugSampleCountScale;
-    float debugMaxDistanceToZero;
+    float debugPad0;
     float debugPad1;
 #endif
 
@@ -66,6 +71,9 @@ Texture2D<float4> gCurrentColor : register(t1);
 Texture2D<float4> gHistoryColor : register(t2);
 Texture2D<float4> gDenoisedColor : register(t3);
 StructuredBuffer<uint> gDistanceNanoVdb : register(t4);
+Texture3D<float4> gNubisNoise : register(t5);
+
+SamplerState gVolumeSampler : register(s0);
 
 RWTexture2D<float4> gRenderOut : register(u0);
 RWTexture2D<float4> gDenoisedOut : register(u1);

@@ -90,7 +90,9 @@ target_link_libraries(cloud_render PRIVATE
 
 add_custom_command(TARGET cloud_render POST_BUILD
     COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:cloud_render>/shaders"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:cloud_render>/data"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${COMPILED_SHADERS} "$<TARGET_FILE_DIR:cloud_render>/shaders"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/data/nubis.dds" "$<TARGET_FILE_DIR:cloud_render>/data"
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "$<TARGET_RUNTIME_DLLS:cloud_render>" "$<TARGET_FILE_DIR:cloud_render>"
     COMMAND_EXPAND_LISTS
 )

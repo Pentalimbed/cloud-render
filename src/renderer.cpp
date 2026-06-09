@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstring>
+#include <fstream>
 #include <iterator>
 #include <stdexcept>
 #include <string>
@@ -173,6 +174,149 @@ Shaders loadShaders(ID3D11Device* device, const std::filesystem::path& shaderDir
     return shaders;
 }
 
+uint32_t readLe32(const std::vector<uint8_t>& bytes, size_t offset)
+{
+    if (offset + 4u > bytes.size()) {
+        throw std::runtime_error("Unexpected end of DDS header");
+    }
+    return static_cast<uint32_t>(bytes[offset])
+        | (static_cast<uint32_t>(bytes[offset + 1u]) << 8u)
+        | (static_cast<uint32_t>(bytes[offset + 2u]) << 16u)
+        | (static_cast<uint32_t>(bytes[offset + 3u]) << 24u);
+}
+
+std::vector<uint8_t> readBinaryFile(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
+    if (!file) {
+        throw std::runtime_error("Failed to open " + path.string());
+    }
+
+    const std::streamoff size = file.tellg();
+    if (size <= 0) {
+        throw std::runtime_error("Empty file: " + path.string());
+    }
+
+    std::vector<uint8_t> bytes(static_cast<size_t>(size));
+    file.seekg(0);
+    file.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!file) {
+        throw std::runtime_error("Failed to read " + path.string());
+    }
+    return bytes;
+}
+
+std::filesystem::path resolveNubisNoisePath(const std::filesystem::path& shaderDir)
+{
+    const std::filesystem::path executableDir = shaderDir.parent_path();
+    const std::filesystem::path candidates[] = {
+        executableDir / "data" / "nubis.dds",
+        std::filesystem::current_path() / "data" / "nubis.dds",
+    };
+
+    for (const std::filesystem::path& candidate : candidates) {
+        if (std::filesystem::exists(candidate)) {
+            return candidate;
+        }
+    }
+
+    throw std::runtime_error("Could not find data/nubis.dds next to the executable or in the current working directory");
+}
+
+void createNubisNoiseTexture(D3DState& d3d, const std::filesystem::path& path)
+{
+    const std::vector<uint8_t> bytes = readBinaryFile(path);
+    if (bytes.size() < 128u || readLe32(bytes, 0) != 0x20534444u || readLe32(bytes, 4) != 124u) {
+        throw std::runtime_error("Unsupported DDS header: " + path.string());
+    }
+
+    constexpr uint32_t kDdsPixelFormatOffset = 76u;
+    constexpr uint32_t kDdsDataOffset = 128u;
+    constexpr uint32_t kDdsPfAlphaPixels = 0x1u;
+    constexpr uint32_t kDdsPfRgb = 0x40u;
+    constexpr uint32_t kDdsCaps2Volume = 0x200000u;
+
+    const uint32_t height = readLe32(bytes, 12);
+    const uint32_t width = readLe32(bytes, 16);
+    const uint32_t depth = readLe32(bytes, 24);
+    const uint32_t mipCount = std::max(readLe32(bytes, 28), 1u);
+    const uint32_t pixelFormatSize = readLe32(bytes, kDdsPixelFormatOffset);
+    const uint32_t pixelFormatFlags = readLe32(bytes, kDdsPixelFormatOffset + 4u);
+    const uint32_t rgbBitCount = readLe32(bytes, kDdsPixelFormatOffset + 12u);
+    const uint32_t rMask = readLe32(bytes, kDdsPixelFormatOffset + 16u);
+    const uint32_t gMask = readLe32(bytes, kDdsPixelFormatOffset + 20u);
+    const uint32_t bMask = readLe32(bytes, kDdsPixelFormatOffset + 24u);
+    const uint32_t aMask = readLe32(bytes, kDdsPixelFormatOffset + 28u);
+    const uint32_t caps2 = readLe32(bytes, 112);
+
+    const bool isRgba8 = pixelFormatSize == 32u
+        && (pixelFormatFlags & (kDdsPfRgb | kDdsPfAlphaPixels)) == (kDdsPfRgb | kDdsPfAlphaPixels)
+        && rgbBitCount == 32u
+        && rMask == 0x000000ffu
+        && gMask == 0x0000ff00u
+        && bMask == 0x00ff0000u
+        && aMask == 0xff000000u;
+    if (width == 0u || height == 0u || depth == 0u || (caps2 & kDdsCaps2Volume) == 0u || !isRgba8) {
+        throw std::runtime_error("Expected a 3D RGBA8 DDS for Nubis noise: " + path.string());
+    }
+
+    std::vector<D3D11_SUBRESOURCE_DATA> subresources;
+    subresources.reserve(mipCount);
+    size_t offset = kDdsDataOffset;
+    for (uint32_t mip = 0; mip < mipCount; ++mip) {
+        const uint32_t mipWidth = std::max(width >> mip, 1u);
+        const uint32_t mipHeight = std::max(height >> mip, 1u);
+        const uint32_t mipDepth = std::max(depth >> mip, 1u);
+        const size_t rowPitch = static_cast<size_t>(mipWidth) * 4u;
+        const size_t slicePitch = rowPitch * mipHeight;
+        const size_t mipBytes = slicePitch * mipDepth;
+        if (offset + mipBytes > bytes.size()) {
+            throw std::runtime_error("DDS mip data is truncated: " + path.string());
+        }
+
+        D3D11_SUBRESOURCE_DATA data = {};
+        data.pSysMem = bytes.data() + offset;
+        data.SysMemPitch = static_cast<UINT>(rowPitch);
+        data.SysMemSlicePitch = static_cast<UINT>(slicePitch);
+        subresources.push_back(data);
+        offset += mipBytes;
+    }
+
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.Depth = depth;
+    desc.MipLevels = mipCount;
+    desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    throwIfFailed(
+        d3d.device->CreateTexture3D(&desc, subresources.data(), d3d.nubisNoiseTexture.GetAddressOf()),
+        "CreateTexture3D failed for " + path.string());
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = desc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+    srvDesc.Texture3D.MostDetailedMip = 0;
+    srvDesc.Texture3D.MipLevels = mipCount;
+    throwIfFailed(
+        d3d.device->CreateShaderResourceView(d3d.nubisNoiseTexture.Get(), &srvDesc, d3d.nubisNoiseSrv.GetAddressOf()),
+        "CreateShaderResourceView failed for " + path.string());
+}
+
+void createVolumeSampler(D3DState& d3d)
+{
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    throwIfFailed(d3d.device->CreateSamplerState(&desc, d3d.volumeSampler.GetAddressOf()), "CreateSamplerState failed");
+}
+
 void createNanoVdbBuffer(
     ID3D11Device* device,
     const nanovdb::GridHandle<nanovdb::HostBuffer>& handle,
@@ -229,10 +373,12 @@ void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 
 void unbindComputeResources(ID3D11DeviceContext* context)
 {
-    std::array<ID3D11ShaderResourceView*, 5> nullSrvs = {};
+    std::array<ID3D11ShaderResourceView*, 6> nullSrvs = {};
     std::array<ID3D11UnorderedAccessView*, 4> nullUavs = {};
+    std::array<ID3D11SamplerState*, 1> nullSamplers = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
+    context->CSSetSamplers(0, static_cast<UINT>(nullSamplers.size()), nullSamplers.data());
 }
 
 void dispatch2D(ID3D11DeviceContext* context, uint32_t width, uint32_t height)
@@ -430,6 +576,8 @@ D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const std::filesy
 
     createBackbufferTargets(d3d);
     createFrameResources(d3d, width, height);
+    createNubisNoiseTexture(d3d, resolveNubisNoisePath(shaderDir));
+    createVolumeSampler(d3d);
 
     D3D11_BUFFER_DESC constantDesc = {};
     constantDesc.ByteWidth = sizeof(RenderConstants);
@@ -524,18 +672,19 @@ RenderConstants makeConstants(
     c.cloudPhaseGd = cloudPhase.gD;
     c.cloudPhaseAlpha = c.phaseFunctionMode == 2u ? cloudPhase.alpha : std::max(settings.cloudPhaseAlpha, 0.0f);
     c.cloudPhaseWeight = cloudPhase.weightD;
+    c.nubisDetailType = std::clamp(settings.nubisDetailType, 0.0f, 1.0f);
+    c.maxDistanceToZero = std::max(volume.maxDistanceToZero, 1.0e-4f);
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));
     c.debugSampleCountScale = std::max(settings.debugSampleCountScale, 1.0f);
-    c.debugMaxDistanceToZero = std::max(volume.maxDistanceToZero, 1.0e-4f);
 #endif
     return c;
 }
 
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
-    if (!d3d.volumeSrv || !d3d.signedDistanceSrv) {
+    if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
         clearBackbuffer(d3d);
         return;
     }
@@ -551,11 +700,14 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         nullptr,
         nullptr,
         d3d.signedDistanceSrv.Get(),
+        d3d.nubisNoiseSrv.Get(),
     };
     ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr};
+    ID3D11SamplerState* renderSamplers[] = {d3d.volumeSampler.Get()};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 5, renderSrvs);
+    d3d.context->CSSetShaderResources(0, 6, renderSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 4, renderUavs, nullptr);
+    d3d.context->CSSetSamplers(0, 1, renderSamplers);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);
     unbindComputeResources(d3d.context.Get());
 

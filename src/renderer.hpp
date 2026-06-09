@@ -54,6 +54,7 @@ struct RenderSettings {
     float raymarchPrimaryStepScale = 0.3f;
     int raymarchShadowSteps = 16;
     int pathMaxBounces = 8;
+    float nubisDetailType = 0.5f;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     float debugSampleCountScale = 256.0f;
 #endif
@@ -105,10 +106,15 @@ struct RenderConstants {
     float cloudPhaseAlpha;
     float cloudPhaseWeight;
 
+    float nubisDetailType;
+    float maxDistanceToZero;
+    float _nubisPad0;
+    float _nubisPad1;
+
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
     float debugSampleCountScale;
-    float debugMaxDistanceToZero;
+    float _debugPad0;
     float _debugPad1;
 #endif
 };
@@ -144,6 +150,9 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeSrv;
     Microsoft::WRL::ComPtr<ID3D11Buffer> signedDistanceBuffer;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> signedDistanceSrv;
+    Microsoft::WRL::ComPtr<ID3D11Texture3D> nubisNoiseTexture;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nubisNoiseSrv;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> volumeSampler;
 
     Shaders shaders;
     uint32_t width = 0;

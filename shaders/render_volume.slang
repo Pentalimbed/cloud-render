@@ -30,6 +30,9 @@ float max3(float3 v)
     return max(max(v.x, v.y), v.z);
 }
 
+static const float kNubisNoiseScale = 314.1f;
+static const float kNubisMipDistanceScale = 0.0025f;
+
 #include "phase.slang"
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -41,7 +44,14 @@ float3 transmittanceFromOpticalDepth(float3 opticalDepth)
     return exp(-min(opticalDepth, float3(80.0f, 80.0f, 80.0f)));
 }
 
-pnanovdb_grid_handle_t firstGrid()
+pnanovdb_grid_handle_t firstDensityGrid()
+{
+    pnanovdb_grid_handle_t grid;
+    grid.address = pnanovdb_address_null();
+    return grid;
+}
+
+pnanovdb_grid_handle_t firstDistanceGrid()
 {
     pnanovdb_grid_handle_t grid;
     grid.address = pnanovdb_address_null();
@@ -96,13 +106,6 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
 
-float readDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
-{
-    pnanovdb_coord_t coord = ijk;
-    pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gDistanceNanoVdb, accessor, coord);
-    return max(0.0f, -pnanovdb_read_float(gDistanceNanoVdb, address));
-}
-
 float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t accessor, inout uint rng)
 {
     float3 basef = floor(indexPosition);
@@ -117,24 +120,114 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
     return readDensityAtCoord(base + corner, accessor);
 }
 
-float sampleDistanceWorld(
+float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
+{
+    pnanovdb_coord_t coord = ijk;
+    pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gDistanceNanoVdb, accessor, coord);
+    return pnanovdb_read_float(gDistanceNanoVdb, address);
+}
+
+float readDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
+{
+    return max(0.0f, -readSignedDistanceAtCoord(ijk, accessor));
+}
+
+float sampleSignedDistanceIndex(float3 indexPosition, inout pnanovdb_readaccessor_t accessor)
+{
+    return readSignedDistanceAtCoord(int3(floor(indexPosition + 0.5f)), accessor);
+}
+
+float sampleSignedDistanceWorld(
     float3 worldPosition,
     pnanovdb_grid_handle_t distanceGrid,
     inout pnanovdb_readaccessor_t accessor)
 {
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gDistanceNanoVdb, distanceGrid, worldPosition);
-    int3 ijk = int3(floor(indexPosition + 0.5f));
-    return readDistanceAtCoord(ijk, accessor);
+    return sampleSignedDistanceIndex(indexPosition, accessor);
+}
+
+float sampleDistanceWorld(
+    float3 worldPosition,
+    pnanovdb_grid_handle_t distanceGrid,
+    inout pnanovdb_readaccessor_t accessor)
+{
+    return max(0.0f, -sampleSignedDistanceWorld(worldPosition, distanceGrid, accessor));
+}
+
+float valueRemap(float value, float oldMin, float oldMax, float newMin, float newMax)
+{
+    float oldRange = max(oldMax - oldMin, 1.0e-6f);
+    float t = saturate((value - oldMin) / oldRange);
+    return lerp(newMin, newMax, t);
+}
+
+float valueErosion(float value, float oldMin)
+{
+    return saturate((value - oldMin) / max(1.0f - oldMin, 1.0e-6f));
+}
+
+float getFractionFromValue(float value, float minValue, float maxValue)
+{
+    return saturate((value - minValue) / max(maxValue - minValue, 1.0e-6f));
+}
+
+float getVoxelCloudMipLevel(float rayDistance)
+{
+    return log2(1.0f + abs(rayDistance * kNubisMipDistanceScale));
+}
+
+float getUprezzedVoxelCloudDensity(float rayDistance, float3 samplePosition, float dimensionalProfile, float detailType, bool useHighFrequencyDetails)
+{
+    float mipmapLevel = getVoxelCloudMipLevel(rayDistance);
+    float4 noise = gNubisNoise.SampleLevel(gVolumeSampler, samplePosition / kNubisNoiseScale, mipmapLevel);
+
+    float wispyNoise = lerp(noise.r, noise.g, dimensionalProfile);
+    float billowyTypeGradient = pow(max(dimensionalProfile, 0.0f), 0.25f);
+    float billowyNoise = lerp(noise.b * 0.3f, noise.a * 0.3f, billowyTypeGradient);
+    float noiseComposite = lerp(wispyNoise, billowyNoise, saturate(detailType));
+
+    if (useHighFrequencyDetails) {
+        float foldedWisps = 1.0f - pow(abs(abs(noise.g * 2.0f - 1.0f) * 2.0f - 1.0f), 4.0f);
+        float foldedBillows = pow(abs(abs(noise.a * 2.0f - 1.0f) * 2.0f - 1.0f), 2.0f);
+        float highHighFrequencyNoise = saturate(lerp(foldedWisps, foldedBillows, saturate(detailType)));
+        float highHighFrequencyBlend = valueRemap(rayDistance, 50.0f, 150.0f, 0.9f, 1.0f);
+        noiseComposite = lerp(highHighFrequencyNoise, noiseComposite, highHighFrequencyBlend);
+    }
+
+    float uprezzedDensity = valueErosion(dimensionalProfile, noiseComposite);
+    uprezzedDensity = pow(max(uprezzedDensity, 0.0f), 0.6f);
+
+    if (useHighFrequencyDetails) {
+        float distanceBlend = getFractionFromValue(rayDistance, 50.0f, 150.0f);
+        uprezzedDensity = pow(max(uprezzedDensity, 0.0f), lerp(0.5f, 1.0f, distanceBlend)) * lerp(0.666f, 1.0f, distanceBlend);
+    }
+
+    return uprezzedDensity;
 }
 
 float sampleDensityWorld(
-    float3 worldPosition,
-    pnanovdb_grid_handle_t grid,
-    inout pnanovdb_readaccessor_t accessor,
-    inout uint rng)
+    float3                        worldPosition,
+    float                         rayDistance,
+    pnanovdb_grid_handle_t        grid,
+    inout pnanovdb_readaccessor_t densityAccessor,
+    pnanovdb_grid_handle_t        distanceGrid,
+    inout pnanovdb_readaccessor_t distanceAccessor,
+    inout uint                    rng)
 {
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
-    return sampleDensityIndex(indexPosition, accessor, rng) * densityMultiplier;
+    float  baseDensity   = sampleDensityIndex(indexPosition, densityAccessor, rng);
+    if (baseDensity <= 0.0f) {
+        return 0.0f;
+    }
+
+    float dimensionalProfile = saturate(-sampleSignedDistanceWorld(worldPosition, distanceGrid, distanceAccessor) / max(maxDistanceToZero, 1.0e-4f));
+    if (dimensionalProfile <= 0.0f) {
+        return 0.0f;
+    }
+
+    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, dimensionalProfile, nubisDetailType, true);
+    detailDensity *= valueRemap(rayDistance, 10.0f, 120.0f, 0.25f, 1.0f);
+    return baseDensity * detailDensity * densityMultiplier;
 }
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -194,6 +287,8 @@ float3 estimateLightTransmittance(
     float3 worldPosition,
     pnanovdb_grid_handle_t grid,
     pnanovdb_root_handle_t root,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot,
     uint stepBudget,
     inout uint rng)
 {
@@ -210,12 +305,15 @@ float3 estimateLightTransmittance(
     float t = t0 + dt * rand01(rng);
     float3 optical = float3(0.0f, 0.0f, 0.0f);
 
-    pnanovdb_readaccessor_t accessor;
-    pnanovdb_readaccessor_init(accessor, root);
+    pnanovdb_readaccessor_t densityAccessor;
+    pnanovdb_readaccessor_init(densityAccessor, root);
+    pnanovdb_readaccessor_t distanceAccessor;
+    pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
 
     [loop]
     for (uint i = 0u; i < steps && t < t1; ++i) {
-        float density = sampleDensityWorld(worldPosition + lightDir * t, grid, accessor, rng);
+        float3 samplePosition = worldPosition + lightDir * t;
+        float density = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
         optical += density * (absorption + scattering) * dt;
         t += dt;
     }
@@ -228,6 +326,8 @@ float3 renderRaymarchSample(
     float3 rayDirection,
     pnanovdb_grid_handle_t grid,
     pnanovdb_root_handle_t root,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot,
     inout uint rng)
 {
     float t0;
@@ -243,8 +343,10 @@ float3 renderRaymarchSample(
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
     float3 throughput = float3(1.0f, 1.0f, 1.0f);
 
-    pnanovdb_readaccessor_t accessor;
-    pnanovdb_readaccessor_init(accessor, root);
+    pnanovdb_readaccessor_t densityAccessor;
+    pnanovdb_readaccessor_init(densityAccessor, root);
+    pnanovdb_readaccessor_t distanceAccessor;
+    pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
 
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
@@ -254,10 +356,10 @@ float3 renderRaymarchSample(
             break;
         }
 
-        float density = sampleDensityWorld(position, grid, accessor, rng);
+        float density = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
         if (density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
-            float3 lightTr = estimateLightTransmittance(position, grid, root, raymarchShadowSteps, rng);
+            float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, raymarchShadowSteps, rng);
             float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
             radiance += throughput * lightColor * lightTr * scattering * density * phase * dt;
             throughput *= transmittanceFromOpticalDepth(sigmaT * density * dt);
@@ -276,6 +378,8 @@ bool sampleVolPathEvent(
     float3 rayDirection,
     pnanovdb_grid_handle_t grid,
     pnanovdb_root_handle_t root,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot,
     inout uint rng,
     inout float3 throughput,
     out float3 position)
@@ -292,8 +396,10 @@ bool sampleVolPathEvent(
     float majorant = max(densityMajorant * max3(sigmaT), 1.0e-4f);
     float t = t0;
 
-    pnanovdb_readaccessor_t accessor;
-    pnanovdb_readaccessor_init(accessor, root);
+    pnanovdb_readaccessor_t densityAccessor;
+    pnanovdb_readaccessor_init(densityAccessor, root);
+    pnanovdb_readaccessor_t distanceAccessor;
+    pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
 
     // Volpathmis-style null-collision tracking: sample free flights from a scalar
     // majorant, classify sampled points as null or real medium events, and carry
@@ -306,7 +412,7 @@ bool sampleVolPathEvent(
         }
 
         position = rayOrigin + rayDirection * t;
-        float density = sampleDensityWorld(position, grid, accessor, rng);
+        float density = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
         float3 localSigmaT = density * sigmaT;
         float realProb = saturate(max3(localSigmaT) / majorant);
 
@@ -332,6 +438,8 @@ float3 renderPathTraceSample(
     float3 rayDirection,
     pnanovdb_grid_handle_t grid,
     pnanovdb_root_handle_t root,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot,
     inout uint rng)
 {
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
@@ -340,14 +448,14 @@ float3 renderPathTraceSample(
     [loop]
     for (uint bounce = 0u; bounce < max(1u, pathMaxBounces); ++bounce) {
         float3 position;
-        if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, rng, throughput, position)) {
+        if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, distanceGrid, distanceRoot, rng, throughput, position)) {
             break;
         }
 
         // Directional-light next-event estimate. With a single delta directional
         // light, the light-sampling MIS branch from volpathmis degenerates to
         // weight 1; phase-sampled paths cannot hit this light by solid angle.
-        float3 lightTr = estimateLightTransmittance(position, grid, root, 48u, rng);
+        float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, 48u, rng);
         float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
         radiance += throughput * lightColor * lightTr * phase;
 
@@ -423,8 +531,10 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     uint2 pixel = dispatchThreadId.xy;
     uint seed = hashUint(pixel.x + pixel.y * imageWidth + frameIndex * 9781u + 0x9e3779b9u);
-    pnanovdb_grid_handle_t grid = firstGrid();
+    pnanovdb_grid_handle_t grid = firstDensityGrid();
     pnanovdb_root_handle_t root = gridRoot(grid);
+    pnanovdb_grid_handle_t distanceGrid = firstDistanceGrid();
+    pnanovdb_root_handle_t distanceRoot = distanceGridRoot(distanceGrid);
 
     float3 rayDirection = makeCameraRay(pixel, seed);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -434,17 +544,15 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     float debugAlpha = 1.0f;
     if (debugViewMode == 2u) {
-        pnanovdb_grid_handle_t distanceGrid = firstGrid();
-        pnanovdb_root_handle_t distanceRoot = distanceGridRoot(distanceGrid);
         float maxDistance = maxDistanceAlongRay(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot);
-        color = distanceDebugColor(maxDistance / max(debugMaxDistanceToZero, 1.0e-4f));
+        color = distanceDebugColor(maxDistance / max(maxDistanceToZero, 1.0e-4f));
         debugAlpha = min(maxDistance, 65504.0f);
     } else {
 #endif
     if (rendererMode == 0u) {
-        color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed);
+        color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, seed);
     } else {
-        color = renderPathTraceSample(cameraPosition, rayDirection, grid, root, seed);
+        color = renderPathTraceSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, seed);
     }
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     if (debugViewMode == 1u) {

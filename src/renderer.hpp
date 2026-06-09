@@ -108,7 +108,7 @@ struct RenderConstants {
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
     float debugSampleCountScale;
-    float _debugPad0;
+    float debugMaxDistanceToZero;
     float _debugPad1;
 #endif
 };
@@ -142,6 +142,8 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11Buffer> constantsBuffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> volumeBuffer;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeSrv;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> signedDistanceBuffer;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> signedDistanceSrv;
 
     Shaders shaders;
     uint32_t width = 0;

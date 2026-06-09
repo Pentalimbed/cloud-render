@@ -4,7 +4,6 @@
     {
       "name": "windows-msvc-vcpkg",
       "displayName": "Windows MSVC vcpkg",
-      "generator": "Visual Studio 18 2026",
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-vs-vcpkg",
       "cacheVariables": {

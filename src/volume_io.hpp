@@ -11,11 +11,13 @@ namespace cloud_render {
 
 struct Volume {
     nanovdb::GridHandle<nanovdb::HostBuffer> handle;
+    nanovdb::GridHandle<nanovdb::HostBuffer> signedDistanceHandle;
     Vec3 nativeWorldMin = {0.0f, 0.0f, 0.0f};
     Vec3 nativeWorldMax = {0.0f, 0.0f, 0.0f};
     Vec3 worldMin = {0.0f, 0.0f, 0.0f};
     Vec3 worldMax = {0.0f, 0.0f, 0.0f};
     float maxDensity = 0.0f;
+    float maxDistanceToZero = 0.0f;
     int nativeUpAxis = 2;
     std::string gridName;
 };

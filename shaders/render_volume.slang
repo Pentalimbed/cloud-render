@@ -54,6 +54,12 @@ pnanovdb_root_handle_t gridRoot(pnanovdb_grid_handle_t grid)
     return pnanovdb_tree_get_root(gNanoVdb, tree);
 }
 
+pnanovdb_root_handle_t distanceGridRoot(pnanovdb_grid_handle_t grid)
+{
+    pnanovdb_tree_handle_t tree = pnanovdb_grid_get_tree(gDistanceNanoVdb, grid);
+    return pnanovdb_tree_get_root(gDistanceNanoVdb, tree);
+}
+
 bool clipIndexBounds(float3 origin, float3 direction, float3 bmin, float3 bmax, out float tmin, out float tmax)
 {
     float3 fallback = sign(direction) * float3(1.0e-8f, 1.0e-8f, 1.0e-8f) + float3(1.0e-8f, 1.0e-8f, 1.0e-8f);
@@ -90,6 +96,13 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
 
+float readDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
+{
+    pnanovdb_coord_t coord = ijk;
+    pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gDistanceNanoVdb, accessor, coord);
+    return max(0.0f, -pnanovdb_read_float(gDistanceNanoVdb, address));
+}
+
 float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t accessor, inout uint rng)
 {
     float3 basef = floor(indexPosition);
@@ -102,6 +115,16 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
         rand01(rng) < frac.z ? 1 : 0);
 
     return readDensityAtCoord(base + corner, accessor);
+}
+
+float sampleDistanceWorld(
+    float3 worldPosition,
+    pnanovdb_grid_handle_t distanceGrid,
+    inout pnanovdb_readaccessor_t accessor)
+{
+    float3 indexPosition = pnanovdb_grid_world_to_indexf(gDistanceNanoVdb, distanceGrid, worldPosition);
+    int3 ijk = int3(floor(indexPosition + 0.5f));
+    return readDistanceAtCoord(ijk, accessor);
 }
 
 float sampleDensityWorld(
@@ -122,6 +145,27 @@ float3 sampleCountDebugColor()
     float3 c0 = float3(0.02f, 0.03f, 0.08f);
     float3 c1 = float3(0.00f, 0.45f, 1.00f);
     float3 c2 = float3(0.10f, 0.95f, 0.45f);
+    float3 c3 = float3(1.00f, 0.85f, 0.10f);
+    float3 c4 = float3(1.00f, 0.08f, 0.02f);
+
+    if (t < 0.25f) {
+        return lerp(c0, c1, t * 4.0f);
+    }
+    if (t < 0.50f) {
+        return lerp(c1, c2, (t - 0.25f) * 4.0f);
+    }
+    if (t < 0.75f) {
+        return lerp(c2, c3, (t - 0.50f) * 4.0f);
+    }
+    return lerp(c3, c4, (t - 0.75f) * 4.0f);
+}
+
+float3 distanceDebugColor(float normalizedDistance)
+{
+    float t = saturate(normalizedDistance);
+    float3 c0 = float3(0.02f, 0.03f, 0.08f);
+    float3 c1 = float3(0.00f, 0.38f, 0.85f);
+    float3 c2 = float3(0.00f, 0.90f, 0.80f);
     float3 c3 = float3(1.00f, 0.85f, 0.10f);
     float3 c4 = float3(1.00f, 0.08f, 0.02f);
 
@@ -322,6 +366,42 @@ float3 renderPathTraceSample(
     return radiance;
 }
 
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+float maxDistanceAlongRay(
+    float3 rayOrigin,
+    float3 rayDirection,
+    pnanovdb_grid_handle_t densityGrid,
+    pnanovdb_root_handle_t densityRoot,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot)
+{
+    float t0;
+    float t1;
+    if (!clipVolume(densityGrid, densityRoot, rayOrigin, rayDirection, t0, t1)) {
+        return 0.0f;
+    }
+
+    t0 = max(t0, 0.0f);
+    float3 indexDirection = pnanovdb_grid_world_to_index_dirf(gDistanceNanoVdb, distanceGrid, rayDirection);
+    float dominantIndexStep = max(max(abs(indexDirection.x), abs(indexDirection.y)), abs(indexDirection.z));
+    float dt = dominantIndexStep > 1.0e-6f ? 0.75f / dominantIndexStep : max(raymarchPrimaryMinStep, 0.001f);
+    dt = max(dt, 0.001f);
+    float t = t0 + dt * 0.5f;
+
+    float maxDistance = 0.0f;
+    pnanovdb_readaccessor_t accessor;
+    pnanovdb_readaccessor_init(accessor, distanceRoot);
+
+    [loop]
+    for (uint i = 0u; i < 65535u && t < t1; ++i) {
+        maxDistance = max(maxDistance, sampleDistanceWorld(rayOrigin + rayDirection * t, distanceGrid, accessor));
+        t += dt;
+    }
+
+    return maxDistance;
+}
+#endif
+
 float3 makeCameraRay(uint2 pixel, inout uint rng)
 {
     float2 jitter = float2(rand01(rng), rand01(rng));
@@ -351,6 +431,16 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
     gVolumeSampleCount = 0u;
 #endif
     float3 color;
+#if CLOUD_RENDER_ENABLE_DEBUG_VIZ
+    float debugAlpha = 1.0f;
+    if (debugViewMode == 2u) {
+        pnanovdb_grid_handle_t distanceGrid = firstGrid();
+        pnanovdb_root_handle_t distanceRoot = distanceGridRoot(distanceGrid);
+        float maxDistance = maxDistanceAlongRay(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot);
+        color = distanceDebugColor(maxDistance / max(debugMaxDistanceToZero, 1.0e-4f));
+        debugAlpha = min(maxDistance, 65504.0f);
+    } else {
+#endif
     if (rendererMode == 0u) {
         color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, seed);
     } else {
@@ -359,9 +449,11 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     if (debugViewMode == 1u) {
         color = sampleCountDebugColor();
+        debugAlpha = min(float(gVolumeSampleCount), 65504.0f);
+    }
     }
 
-    gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), min(float(gVolumeSampleCount), 65504.0f));
+    gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), debugAlpha);
 #else
     gRenderOut[pixel] = float4(max(color, float3(0.0f, 0.0f, 0.0f)), 1.0f);
 #endif

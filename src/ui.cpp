@@ -64,6 +64,8 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
         ImGui::TextUnformatted(volume->gridName.c_str());
         ImGui::Text("Max mixing ratio %.6g kg/kg", volume->maxDensity);
         controlHint("Maximum active voxel density in the loaded volume before the UI Density multiplier.");
+        ImGui::Text("Max distance to zero %.6g", volume->maxDistanceToZero);
+        controlHint("Maximum signed-distance magnitude stored in the generated companion volume.");
         ImGui::Text("Scaled max density %.6g", volume->maxDensity * settings.densityMultiplier);
         controlHint("Maximum active voxel density after the current UI Density multiplier.");
     } else {
@@ -77,8 +79,8 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     actions.settingsChanged |= ImGui::Combo("Renderer", &settings.rendererMode, modes, 2);
     controlHint("Selects the primary volume integrator.");
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
-    const char* debugViews[] = {"Off", "Volume sample count"};
-    actions.settingsChanged |= ImGui::Combo("Debug view", &settings.debugViewMode, debugViews, 2);
+    const char* debugViews[] = {"Off", "Volume sample count", "Ray max distance"};
+    actions.settingsChanged |= ImGui::Combo("Debug view", &settings.debugViewMode, debugViews, 3);
     controlHint("Overrides the final image with renderer-side diagnostic output.");
     if (settings.debugViewMode == 1) {
         actions.settingsChanged |= ImGui::SliderFloat("Sample count scale", &settings.debugSampleCountScale, 1.0f, 4096.0f, "%.0f", ImGuiSliderFlags_Logarithmic);

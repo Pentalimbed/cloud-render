@@ -173,16 +173,21 @@ Shaders loadShaders(ID3D11Device* device, const std::filesystem::path& shaderDir
     return shaders;
 }
 
-void createVolumeBuffer(D3DState& d3d, const Volume& volume)
+void createNanoVdbBuffer(
+    ID3D11Device* device,
+    const nanovdb::GridHandle<nanovdb::HostBuffer>& handle,
+    ComPtr<ID3D11Buffer>& outBuffer,
+    ComPtr<ID3D11ShaderResourceView>& outSrv,
+    std::string_view label)
 {
-    const uint64_t byteSize = volume.handle.size();
-    if (byteSize == 0 || !volume.handle.data()) {
-        throw std::runtime_error("NanoVDB handle is empty");
+    const uint64_t byteSize = handle.size();
+    if (byteSize == 0 || !handle.data()) {
+        throw std::runtime_error(std::string(label) + " NanoVDB handle is empty");
     }
 
     const uint32_t wordCount = static_cast<uint32_t>((byteSize + 3u) / 4u);
     std::vector<uint32_t> words(wordCount, 0u);
-    std::memcpy(words.data(), volume.handle.data(), static_cast<size_t>(byteSize));
+    std::memcpy(words.data(), handle.data(), static_cast<size_t>(byteSize));
 
     D3D11_BUFFER_DESC desc = {};
     desc.ByteWidth = wordCount * sizeof(uint32_t);
@@ -194,24 +199,37 @@ void createVolumeBuffer(D3DState& d3d, const Volume& volume)
     D3D11_SUBRESOURCE_DATA data = {};
     data.pSysMem = words.data();
 
-    ComPtr<ID3D11Buffer> volumeBuffer;
-    throwIfFailed(d3d.device->CreateBuffer(&desc, &data, volumeBuffer.GetAddressOf()), "CreateBuffer failed for NanoVDB payload");
+    ComPtr<ID3D11Buffer> buffer;
+    throwIfFailed(device->CreateBuffer(&desc, &data, buffer.GetAddressOf()), "CreateBuffer failed for " + std::string(label) + " NanoVDB payload");
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
     srvDesc.Format = DXGI_FORMAT_UNKNOWN;
     srvDesc.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
     srvDesc.Buffer.FirstElement = 0;
     srvDesc.Buffer.NumElements = wordCount;
-    ComPtr<ID3D11ShaderResourceView> volumeSrv;
-    throwIfFailed(d3d.device->CreateShaderResourceView(volumeBuffer.Get(), &srvDesc, volumeSrv.GetAddressOf()), "CreateShaderResourceView failed for NanoVDB payload");
+    ComPtr<ID3D11ShaderResourceView> srv;
+    throwIfFailed(
+        device->CreateShaderResourceView(buffer.Get(), &srvDesc, srv.GetAddressOf()),
+        "CreateShaderResourceView failed for " + std::string(label) + " NanoVDB payload");
 
-    d3d.volumeBuffer = std::move(volumeBuffer);
-    d3d.volumeSrv = std::move(volumeSrv);
+    outBuffer = std::move(buffer);
+    outSrv = std::move(srv);
+}
+
+void createVolumeBuffers(D3DState& d3d, const Volume& volume)
+{
+    createNanoVdbBuffer(d3d.device.Get(), volume.handle, d3d.volumeBuffer, d3d.volumeSrv, "density");
+    createNanoVdbBuffer(
+        d3d.device.Get(),
+        volume.signedDistanceHandle,
+        d3d.signedDistanceBuffer,
+        d3d.signedDistanceSrv,
+        "signed-distance");
 }
 
 void unbindComputeResources(ID3D11DeviceContext* context)
 {
-    std::array<ID3D11ShaderResourceView*, 4> nullSrvs = {};
+    std::array<ID3D11ShaderResourceView*, 5> nullSrvs = {};
     std::array<ID3D11UnorderedAccessView*, 4> nullUavs = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
@@ -453,7 +471,7 @@ void checkShaders(const std::filesystem::path& shaderDir)
 void setVolume(D3DState& d3d, const Volume& volume)
 {
     unbindComputeResources(d3d.context.Get());
-    createVolumeBuffer(d3d, volume);
+    createVolumeBuffers(d3d, volume);
     d3d.historyIndex = 0;
 }
 
@@ -508,15 +526,16 @@ RenderConstants makeConstants(
     c.cloudPhaseWeight = cloudPhase.weightD;
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
-    c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 1));
+    c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));
     c.debugSampleCountScale = std::max(settings.debugSampleCountScale, 1.0f);
+    c.debugMaxDistanceToZero = std::max(volume.maxDistanceToZero, 1.0e-4f);
 #endif
     return c;
 }
 
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
-    if (!d3d.volumeSrv) {
+    if (!d3d.volumeSrv || !d3d.signedDistanceSrv) {
         clearBackbuffer(d3d);
         return;
     }
@@ -526,10 +545,16 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
     ID3D11Buffer* cb = d3d.constantsBuffer.Get();
     d3d.context->CSSetConstantBuffers(0, 1, &cb);
 
-    ID3D11ShaderResourceView* renderSrvs[] = {d3d.volumeSrv.Get(), nullptr, nullptr, nullptr};
+    ID3D11ShaderResourceView* renderSrvs[] = {
+        d3d.volumeSrv.Get(),
+        nullptr,
+        nullptr,
+        nullptr,
+        d3d.signedDistanceSrv.Get(),
+    };
     ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 4, renderSrvs);
+    d3d.context->CSSetShaderResources(0, 5, renderSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 4, renderUavs, nullptr);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);
     unbindComputeResources(d3d.context.Get());

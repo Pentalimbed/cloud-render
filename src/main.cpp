@@ -86,6 +86,8 @@ bool loadVolumeIntoRenderer(
         volumeUi.statusIsError = false;
 
         std::cout << "Loaded " << path << " grid=" << currentVolume->gridName << " bytes=" << currentVolume->handle.size()
+                  << " sdf_bytes=" << currentVolume->signedDistanceHandle.size()
+                  << " max_distance_to_zero=" << currentVolume->maxDistanceToZero
                   << " native_up=+" << axisName(currentVolume->nativeUpAxis) << "\n";
         return true;
     } catch (const std::exception& e) {
@@ -238,6 +240,8 @@ void runCheck(const std::filesystem::path& volumePath)
     Volume volume = loadVolume(volumePath);
     checkShaders(executableDirectory() / "shaders");
     std::cout << "OK: " << volumePath << " grid=" << volume.gridName << " nanovdb_bytes=" << volume.handle.size()
+              << " sdf_nanovdb_bytes=" << volume.signedDistanceHandle.size()
+              << " max_distance_to_zero=" << volume.maxDistanceToZero
               << " native_up=+" << axisName(volume.nativeUpAxis)
               << " render_bounds_min=(" << volume.worldMin.x << "," << volume.worldMin.y << "," << volume.worldMin.z << ")"
               << " render_bounds_max=(" << volume.worldMax.x << "," << volume.worldMax.y << "," << volume.worldMax.z << ")\n";

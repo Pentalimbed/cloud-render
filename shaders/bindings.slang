@@ -52,7 +52,7 @@ cbuffer RenderConstants : register(b0)
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
     float debugSampleCountScale;
-    float debugPad0;
+    float debugMaxDistanceToZero;
     float debugPad1;
 #endif
 
@@ -65,6 +65,7 @@ StructuredBuffer<uint> gNanoVdb : register(t0);
 Texture2D<float4> gCurrentColor : register(t1);
 Texture2D<float4> gHistoryColor : register(t2);
 Texture2D<float4> gDenoisedColor : register(t3);
+StructuredBuffer<uint> gDistanceNanoVdb : register(t4);
 
 RWTexture2D<float4> gRenderOut : register(u0);
 RWTexture2D<float4> gDenoisedOut : register(u1);

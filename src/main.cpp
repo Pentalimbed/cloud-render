@@ -74,6 +74,7 @@ bool loadVolumeIntoRenderer(
     const std::filesystem::path& path,
     D3DState& d3d,
     std::optional<Volume>& currentVolume,
+    RenderSettings& settings,
     Camera& camera,
     VolumeUiState& volumeUi)
 {
@@ -81,6 +82,7 @@ bool loadVolumeIntoRenderer(
         Volume loadedVolume = loadVolume(path);
         setVolume(d3d, loadedVolume);
         currentVolume = std::move(loadedVolume);
+        settings.maxDistanceToZero = currentVolume->maxDistanceToZero;
         camera = makeInitialCamera(currentVolume->worldMin, currentVolume->worldMax);
         volumeUi.status = "Loaded " + path.string();
         volumeUi.statusIsError = false;
@@ -142,7 +144,7 @@ void run(const std::optional<std::filesystem::path>& initialVolumePath, uint32_t
     uint32_t frameIndex = 0;
 
     if (initialVolumePath) {
-        resetHistory = loadVolumeIntoRenderer(*initialVolumePath, d3d, volume, camera, volumeUi) || resetHistory;
+        resetHistory = loadVolumeIntoRenderer(*initialVolumePath, d3d, volume, settings, camera, volumeUi) || resetHistory;
     }
 
     auto previousTime = std::chrono::steady_clock::now();
@@ -194,7 +196,7 @@ void run(const std::optional<std::filesystem::path>& initialVolumePath, uint32_t
             const UiActions uiActions = buildUi(settings, volume ? &*volume : nullptr, volumeUi, fps, frameMs);
             resetHistory = uiActions.settingsChanged || resetHistory;
             if (uiActions.loadVolumeRequested) {
-                resetHistory = loadVolumeIntoRenderer(std::filesystem::path(volumeUi.path.data()), d3d, volume, camera, volumeUi) || resetHistory;
+                resetHistory = loadVolumeIntoRenderer(std::filesystem::path(volumeUi.path.data()), d3d, volume, settings, camera, volumeUi) || resetHistory;
             }
         }
 

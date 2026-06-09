@@ -673,7 +673,7 @@ RenderConstants makeConstants(
     c.cloudPhaseAlpha = c.phaseFunctionMode == 2u ? cloudPhase.alpha : std::max(settings.cloudPhaseAlpha, 0.0f);
     c.cloudPhaseWeight = cloudPhase.weightD;
     c.nubisDetailType = std::clamp(settings.nubisDetailType, 0.0f, 1.0f);
-    c.maxDistanceToZero = std::max(volume.maxDistanceToZero, 1.0e-4f);
+    c.maxDistanceToZero = std::max(settings.maxDistanceToZero, 1.0e-4f);
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));

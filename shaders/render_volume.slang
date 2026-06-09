@@ -106,7 +106,7 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
 
-float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t accessor, inout uint rng)
+int3 stochasticLinearIndex(float3 indexPosition, inout uint rng)
 {
     float3 basef = floor(indexPosition);
     float3 frac = saturate(indexPosition - basef);
@@ -117,7 +117,7 @@ float sampleDensityIndex(float3 indexPosition, inout pnanovdb_readaccessor_t acc
         rand01(rng) < frac.y ? 1 : 0,
         rand01(rng) < frac.z ? 1 : 0);
 
-    return readDensityAtCoord(base + corner, accessor);
+    return base + corner;
 }
 
 float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
@@ -125,33 +125,6 @@ float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor
     pnanovdb_coord_t coord = ijk;
     pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gDistanceNanoVdb, accessor, coord);
     return pnanovdb_read_float(gDistanceNanoVdb, address);
-}
-
-float readDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
-{
-    return max(0.0f, -readSignedDistanceAtCoord(ijk, accessor));
-}
-
-float sampleSignedDistanceIndex(float3 indexPosition, inout pnanovdb_readaccessor_t accessor)
-{
-    return readSignedDistanceAtCoord(int3(floor(indexPosition + 0.5f)), accessor);
-}
-
-float sampleSignedDistanceWorld(
-    float3 worldPosition,
-    pnanovdb_grid_handle_t distanceGrid,
-    inout pnanovdb_readaccessor_t accessor)
-{
-    float3 indexPosition = pnanovdb_grid_world_to_indexf(gDistanceNanoVdb, distanceGrid, worldPosition);
-    return sampleSignedDistanceIndex(indexPosition, accessor);
-}
-
-float sampleDistanceWorld(
-    float3 worldPosition,
-    pnanovdb_grid_handle_t distanceGrid,
-    inout pnanovdb_readaccessor_t accessor)
-{
-    return max(0.0f, -sampleSignedDistanceWorld(worldPosition, distanceGrid, accessor));
 }
 
 float valueRemap(float value, float oldMin, float oldMax, float newMin, float newMax)
@@ -215,12 +188,14 @@ float sampleDensityWorld(
     inout uint                    rng)
 {
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
-    float  baseDensity   = sampleDensityIndex(indexPosition, densityAccessor, rng);
+    int3 sampleIndex = stochasticLinearIndex(indexPosition, rng);
+
+    float baseDensity = readDensityAtCoord(sampleIndex, densityAccessor);
     if (baseDensity <= 0.0f) {
         return 0.0f;
     }
 
-    float dimensionalProfile = saturate(-sampleSignedDistanceWorld(worldPosition, distanceGrid, distanceAccessor) / max(maxDistanceToZero, 1.0e-4f));
+    float dimensionalProfile = saturate(-readSignedDistanceAtCoord(sampleIndex, distanceAccessor) / max(maxDistanceToZero, 1.0e-4f));
     if (dimensionalProfile <= 0.0f) {
         return 0.0f;
     }
@@ -502,7 +477,8 @@ float maxDistanceAlongRay(
 
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
-        maxDistance = max(maxDistance, sampleDistanceWorld(rayOrigin + rayDirection * t, distanceGrid, accessor));
+        float3 indexPosition = pnanovdb_grid_world_to_indexf(gDistanceNanoVdb, distanceGrid, rayOrigin + rayDirection * t);
+        maxDistance = max(maxDistance, -readSignedDistanceAtCoord(indexPosition + 0.5f, accessor));
         t += dt;
     }
 

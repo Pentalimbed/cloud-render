@@ -96,6 +96,8 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     controlHint("Scales sampled VDB density before absorption and scattering.");
     actions.settingsChanged |= ImGui::SliderFloat("Nubis detail type", &settings.nubisDetailType, 0.0f, 1.0f, "%.2f");
     controlHint("Blends the Nubis up-res noise from wispy details at 0 to billowy details at 1.");
+    actions.settingsChanged |= ImGui::SliderFloat("Max distance to zero", &settings.maxDistanceToZero, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    controlHint("Normalizes the signed-distance profile used for the dimension profile lookup.");
     actions.settingsChanged |= controlVec3Color("Absorption", settings.absorption);
     controlHint("Per-channel extinction that removes light in the medium.");
     actions.settingsChanged |= controlVec3Color("Scattering", settings.scattering);

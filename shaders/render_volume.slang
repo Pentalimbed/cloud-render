@@ -144,6 +144,32 @@ float getFractionFromValue(float value, float minValue, float maxValue)
     return saturate((value - minValue) / max(maxValue - minValue, 1.0e-6f));
 }
 
+float rgbLuminance(float3 value)
+{
+    return dot(value, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float currentPhaseAnisotropy()
+{
+    if (phaseFunctionMode == PhaseModeJendersieCloud) {
+        return lerp(cloudPhaseGhg, cloudPhaseGd, saturate(cloudPhaseWeight));
+    }
+    return cloudPhaseGhg;
+}
+
+float reducedPhaseAnisotropy(float g, float scatterCount)
+{
+    float signG = g < 0.0f ? -1.0f : 1.0f;
+    return signG * pow(saturate(abs(g)), 1.0f + max(scatterCount, 0.0f));
+}
+
+struct VolumeDensitySample
+{
+    float density;
+    float dimensionalProfile;
+    float boundaryDepth;
+};
+
 float getVoxelCloudMipLevel(float rayDistance)
 {
     return log2(1.0f + abs(rayDistance * kNubisMipDistanceScale));
@@ -178,7 +204,7 @@ float getUprezzedVoxelCloudDensity(float rayDistance, float3 samplePosition, flo
     return uprezzedDensity;
 }
 
-float sampleDensityWorld(
+VolumeDensitySample sampleDensityWorld(
     float3                        worldPosition,
     float                         rayDistance,
     pnanovdb_grid_handle_t        grid,
@@ -187,22 +213,30 @@ float sampleDensityWorld(
     inout pnanovdb_readaccessor_t distanceAccessor,
     inout uint                    rng)
 {
+    VolumeDensitySample sample;
+    sample.density = 0.0f;
+    sample.dimensionalProfile = 0.0f;
+    sample.boundaryDepth = 0.0f;
+
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
     int3 sampleIndex = stochasticLinearIndex(indexPosition, rng);
 
     float baseDensity = readDensityAtCoord(sampleIndex, densityAccessor);
     if (baseDensity <= 0.0f) {
-        return 0.0f;
+        return sample;
     }
 
-    float dimensionalProfile = saturate(-readSignedDistanceAtCoord(sampleIndex, distanceAccessor) / max(maxDistanceToZero, 1.0e-4f));
-    if (dimensionalProfile <= 0.0f) {
-        return 0.0f;
+    float signedDistance = -readSignedDistanceAtCoord(sampleIndex, distanceAccessor);
+    sample.boundaryDepth = max(signedDistance, 0.0f);
+    sample.dimensionalProfile = saturate(sample.boundaryDepth / max(maxDistanceToZero, 1.0e-4f));
+    if (sample.dimensionalProfile <= 0.0f) {
+        return sample;
     }
 
-    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, dimensionalProfile, nubisDetailType, true);
+    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, sample.dimensionalProfile, nubisDetailType, true);
     detailDensity *= valueRemap(rayDistance, 10.0f, 120.0f, 0.25f, 1.0f);
-    return baseDensity * detailDensity * densityMultiplier;
+    sample.density = baseDensity * detailDensity * densityMultiplier;
+    return sample;
 }
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -267,10 +301,9 @@ float3 estimateLightTransmittance(
     uint stepBudget,
     inout uint rng)
 {
-    float3 lightDir = safeNormalize(lightDirection);
     float t0;
     float t1;
-    if (!clipVolume(grid, root, worldPosition + lightDir * 0.02f, lightDir, t0, t1)) {
+    if (!clipVolume(grid, root, worldPosition + lightDirection * 0.02f, lightDirection, t0, t1)) {
         return float3(1.0f, 1.0f, 1.0f);
     }
 
@@ -287,13 +320,52 @@ float3 estimateLightTransmittance(
 
     [loop]
     for (uint i = 0u; i < steps && t < t1; ++i) {
-        float3 samplePosition = worldPosition + lightDir * t;
-        float density = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
-        optical += density * (absorption + scattering) * dt;
+        float3 samplePosition = worldPosition + lightDirection * t;
+        VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
+        optical += sample.density * (absorption + scattering) * dt;
         t += dt;
     }
 
     return transmittanceFromOpticalDepth(optical);
+}
+
+float3 estimateEmpiricalMultiScatterFactor(
+    float3 lightTransmittance,
+    float density,
+    float boundaryDepth,
+    float dimensionalProfile,
+    float phaseCosine)
+{
+    float3 sigmaS = scattering;
+    float3 sigmaA = absorption;
+    if (max3(sigmaS) <= 1.0e-6f) {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    float g = clamp(currentPhaseAnisotropy(), -0.95f, 0.95f);
+    float3 sigmaSReduced = max((1.0f - g) * sigmaS, float3(0.0f, 0.0f, 0.0f));
+    float3 sigmaTReduced = max(sigmaA + sigmaSReduced, float3(1.0e-4f, 1.0e-4f, 1.0e-4f));
+    float3 albedoReduced = saturate(sigmaSReduced / sigmaTReduced);
+
+    float transportDepth = boundaryDepth * density * rgbLuminance(sigmaTReduced);
+    float geometricScatterCount = transportDepth + transportDepth * transportDepth;
+    float absorptionScatterCount = rgbLuminance(albedoReduced) / max(1.0f - rgbLuminance(albedoReduced), 1.0e-3f);
+    float scatterCount = geometricScatterCount * absorptionScatterCount / max(geometricScatterCount + absorptionScatterCount, 1.0e-4f);
+    if (scatterCount <= 1.0e-4f) {
+        return float3(0.0f, 0.0f, 0.0f);
+    }
+
+    float3 sigmaTFull = max(sigmaA + sigmaS, float3(1.0e-4f, 1.0e-4f, 1.0e-4f));
+    float3 sigmaEff = sqrt(max(3.0f * sigmaA * sigmaTReduced, float3(0.0f, 0.0f, 0.0f)));
+    float3 softenedExponent = clamp(sigmaEff / sigmaTFull, float3(0.0f, 0.0f, 0.0f), float3(1.0f, 1.0f, 1.0f));
+    float3 softenedLight = pow(saturate(lightTransmittance), softenedExponent);
+    float3 multiScatterLight = max(softenedLight - lightTransmittance, float3(0.0f, 0.0f, 0.0f));
+
+    float gMs = reducedPhaseAnisotropy(g, scatterCount);
+    float phaseMs = evalHenyeyGreenstein(phaseCosine, gMs);
+    float multiScatterBoost = saturate(scatterCount / (1.0f + scatterCount));
+
+    return multiScatterLight * phaseMs * (albedoReduced * (multiScatterBoost * dimensionalProfile));
 }
 
 float3 renderRaymarchSample(
@@ -331,13 +403,15 @@ float3 renderRaymarchSample(
             break;
         }
 
-        float density = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
-        if (density > 0.0f) {
+        VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
+        if (sample.density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
             float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, raymarchShadowSteps, rng);
-            float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
-            radiance += throughput * lightColor * lightTr * scattering * density * phase * dt;
-            throughput *= transmittanceFromOpticalDepth(sigmaT * density * dt);
+            float phaseCosine = dot(lightDirection, rayDirection);
+            float phase = evalPhase(phaseCosine);
+            float3 scatterBase = throughput * lightColor * scattering * sample.density * dt;
+            radiance += scatterBase * (lightTr * phase + estimateEmpiricalMultiScatterFactor(lightTr, sample.density, sample.boundaryDepth, sample.dimensionalProfile, phaseCosine));
+            throughput *= transmittanceFromOpticalDepth(sigmaT * sample.density * dt);
             if (max3(throughput) < 0.003f) {
                 break;
             }
@@ -387,12 +461,12 @@ bool sampleVolPathEvent(
         }
 
         position = rayOrigin + rayDirection * t;
-        float density = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
-        float3 localSigmaT = density * sigmaT;
+        VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
+        float3 localSigmaT = sample.density * sigmaT;
         float realProb = saturate(max3(localSigmaT) / majorant);
 
         if (realProb > 0.0f && rand01(rng) < realProb) {
-            float3 scatterWeight = density * scattering / (majorant * max(realProb, 1.0e-4f));
+            float3 scatterWeight = sample.density * scattering / (majorant * max(realProb, 1.0e-4f));
             throughput *= scatterWeight;
             return true;
         }
@@ -431,7 +505,7 @@ float3 renderPathTraceSample(
         // light, the light-sampling MIS branch from volpathmis degenerates to
         // weight 1; phase-sampled paths cannot hit this light by solid angle.
         float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, 48u, rng);
-        float phase = evalPhase(dot(safeNormalize(lightDirection), rayDirection));
+        float phase = evalPhase(dot(lightDirection, rayDirection));
         radiance += throughput * lightColor * lightTr * phase;
 
         rayDirection = samplePhaseDirection(rayDirection, rng);

@@ -552,7 +552,7 @@ float maxDistanceAlongRay(
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
         float3 indexPosition = pnanovdb_grid_world_to_indexf(gDistanceNanoVdb, distanceGrid, rayOrigin + rayDirection * t);
-        maxDistance = max(maxDistance, -readSignedDistanceAtCoord(indexPosition + 0.5f, accessor));
+        maxDistance = max(maxDistance, -readSignedDistanceAtCoord(int3(indexPosition + 0.5f), accessor));
         t += dt;
     }
 

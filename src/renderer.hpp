@@ -55,7 +55,9 @@ struct RenderSettings {
     int raymarchShadowSteps = 16;
     int pathMaxBounces = 8;
     float nubisDetailType = 0.5f;
+    float nubisNoiseScale = 178.7f;
     float maxDistanceToZero = 1.0f;
+    float msAttenuationScale = 6.0f;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     float debugSampleCountScale = 256.0f;
 #endif
@@ -108,9 +110,9 @@ struct RenderConstants {
     float cloudPhaseWeight;
 
     float nubisDetailType;
+    float nubisNoiseScale;
     float maxDistanceToZero;
-    float _nubisPad0;
-    float _nubisPad1;
+    float msAttenuationScale;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;

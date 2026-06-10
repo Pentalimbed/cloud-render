@@ -43,16 +43,16 @@ cbuffer RenderConstants : register(b0)
     uint resetHistory;
     uint pathHistoryMode;
     uint phaseFunctionMode;
-    
+
     float cloudPhaseGhg;
     float cloudPhaseGd;
     float cloudPhaseAlpha;
     float cloudPhaseWeight;
 
     float nubisDetailType;
+    float nubisNoiseScale;
     float maxDistanceToZero;
-    float nubisPad0;
-    float nubisPad1;
+    float msAttenuationScale;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;

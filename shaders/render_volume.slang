@@ -30,7 +30,6 @@ float max3(float3 v)
     return max(max(v.x, v.y), v.z);
 }
 
-static const float kNubisNoiseScale = 314.1f;
 static const float kNubisMipDistanceScale = 0.0025f;
 
 #include "phase.slang"
@@ -178,7 +177,8 @@ float getVoxelCloudMipLevel(float rayDistance)
 float getUprezzedVoxelCloudDensity(float rayDistance, float3 samplePosition, float dimensionalProfile, float detailType, bool useHighFrequencyDetails)
 {
     float mipmapLevel = getVoxelCloudMipLevel(rayDistance);
-    float4 noise = gNubisNoise.SampleLevel(gVolumeSampler, samplePosition / kNubisNoiseScale, mipmapLevel);
+    float noiseScale = max(nubisNoiseScale, 1.0e-3f);
+    float4 noise = gNubisNoise.SampleLevel(gVolumeSampler, samplePosition / noiseScale, mipmapLevel);
 
     float wispyNoise = lerp(noise.r, noise.g, dimensionalProfile);
     float billowyTypeGradient = pow(max(dimensionalProfile, 0.0f), 0.25f);
@@ -365,7 +365,7 @@ float3 estimateEmpiricalMultiScatterFactor(
     float phaseMs = evalHenyeyGreenstein(phaseCosine, gMs);
     float multiScatterBoost = saturate(scatterCount / (1.0f + scatterCount));
 
-    return multiScatterLight * phaseMs * (albedoReduced * (multiScatterBoost * dimensionalProfile));
+    return multiScatterLight * phaseMs * (albedoReduced * (multiScatterBoost * dimensionalProfile * msAttenuationScale));
 }
 
 float3 renderRaymarchSample(

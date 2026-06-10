@@ -96,12 +96,16 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     controlHint("Scales sampled VDB density before absorption and scattering.");
     actions.settingsChanged |= ImGui::SliderFloat("Nubis detail type", &settings.nubisDetailType, 0.0f, 1.0f, "%.2f");
     controlHint("Blends the Nubis up-res noise from wispy details at 0 to billowy details at 1.");
+    actions.settingsChanged |= ImGui::SliderFloat("Noise scale", &settings.nubisNoiseScale, 1.0f, 2000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    controlHint("Scales the world-space frequency of the Nubis detail noise; larger values make broader features.");
     actions.settingsChanged |= ImGui::SliderFloat("Max distance to zero", &settings.maxDistanceToZero, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     controlHint("Normalizes the signed-distance profile used for the dimension profile lookup.");
     actions.settingsChanged |= controlVec3Color("Absorption", settings.absorption);
     controlHint("Per-channel extinction that removes light in the medium.");
     actions.settingsChanged |= controlVec3Color("Scattering", settings.scattering);
     controlHint("Per-channel scattering coefficient for in-scattered light.");
+    actions.settingsChanged |= ImGui::SliderFloat("MS attenuation scale", &settings.msAttenuationScale, 0.0f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    controlHint("Scales the added empirical multiple-scattering attenuation contribution.");
     actions.settingsChanged |= controlVec3Drag("Light direction", settings.lightDirection, 0.01f, -1.0f, 1.0f);
     controlHint("Directional light vector; it is normalized after editing.");
     settings.lightDirection = normalize(settings.lightDirection);

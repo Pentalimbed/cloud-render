@@ -116,7 +116,7 @@ struct RenderConstants {
     float msAttenuationScale;
 
     Vec3 ambientLightColor;
-    float _ambientLightPad0;
+    float coarseDistanceSafetyMargin;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
@@ -157,6 +157,8 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeSrv;
     Microsoft::WRL::ComPtr<ID3D11Buffer> signedDistanceBuffer;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> signedDistanceSrv;
+    Microsoft::WRL::ComPtr<ID3D11Texture3D> coarseSignedDistanceTexture;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> coarseSignedDistanceSrv;
     Microsoft::WRL::ComPtr<ID3D11Texture3D> nubisNoiseTexture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nubisNoiseSrv;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> volumeSampler;

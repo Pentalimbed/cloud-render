@@ -36,5 +36,5 @@ Slang sources are split by pass under `shaders/`, with `PNanoVDB.h` colocated th
 Press `F1` to toggle the UI. With the UI hidden, fly controls use mouse look plus `WASD/QE`, with movement scaled to the loaded volume bounds. In path tracer mode, the `Path history` control switches between temporal denoising and progressive accumulation.
 
 ## Reference
-- https://github.com/giorgiomarcias/distance_transform
+- OpenVDB `tools::fogToSdf` / fast sweeping
 - `ref/VoxelCloudSampler.cg`

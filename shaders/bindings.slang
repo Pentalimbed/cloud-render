@@ -55,7 +55,7 @@ cbuffer RenderConstants : register(b0)
     float msAttenuationScale;
 
     float3 ambientLightColor;
-    float ambientLightPad0;
+    float coarseDistanceSafetyMargin;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
@@ -75,6 +75,7 @@ Texture2D<float4> gHistoryColor : register(t2);
 Texture2D<float4> gDenoisedColor : register(t3);
 StructuredBuffer<uint> gDistanceNanoVdb : register(t4);
 Texture3D<float4> gNubisNoise : register(t5);
+Texture3D<float> gCoarseSignedDistance : register(t6);
 
 SamplerState gVolumeSampler : register(s0);
 

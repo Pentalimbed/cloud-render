@@ -383,6 +383,47 @@ void createNanoVdbBuffer(
     outSrv = std::move(srv);
 }
 
+void createCoarseSignedDistanceTexture(D3DState& d3d, const CoarseSignedDistanceVolume& volume)
+{
+    d3d.coarseSignedDistanceTexture.Reset();
+    d3d.coarseSignedDistanceSrv.Reset();
+
+    const uint32_t width = volume.size[0];
+    const uint32_t height = volume.size[1];
+    const uint32_t depth = volume.size[2];
+    const size_t expectedCount = static_cast<size_t>(width) * static_cast<size_t>(height) * static_cast<size_t>(depth);
+    if (width == 0u || height == 0u || depth == 0u || volume.values.size() != expectedCount) {
+        throw std::runtime_error("Coarse signed-distance volume data is invalid");
+    }
+
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.Depth = depth;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R32_FLOAT;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+
+    D3D11_SUBRESOURCE_DATA data = {};
+    data.pSysMem = volume.values.data();
+    data.SysMemPitch = width * sizeof(float);
+    data.SysMemSlicePitch = width * height * sizeof(float);
+
+    throwIfFailed(
+        d3d.device->CreateTexture3D(&desc, &data, d3d.coarseSignedDistanceTexture.GetAddressOf()),
+        "CreateTexture3D failed for coarse signed-distance volume");
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = desc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+    srvDesc.Texture3D.MostDetailedMip = 0;
+    srvDesc.Texture3D.MipLevels = 1;
+    throwIfFailed(
+        d3d.device->CreateShaderResourceView(d3d.coarseSignedDistanceTexture.Get(), &srvDesc, d3d.coarseSignedDistanceSrv.GetAddressOf()),
+        "CreateShaderResourceView failed for coarse signed-distance volume");
+}
+
 void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 {
     createNanoVdbBuffer(d3d.device.Get(), volume.handle, d3d.volumeBuffer, d3d.volumeSrv, "density");
@@ -392,11 +433,12 @@ void createVolumeBuffers(D3DState& d3d, const Volume& volume)
         d3d.signedDistanceBuffer,
         d3d.signedDistanceSrv,
         "signed-distance");
+    createCoarseSignedDistanceTexture(d3d, volume.coarseSignedDistance);
 }
 
 void unbindComputeResources(ID3D11DeviceContext* context)
 {
-    std::array<ID3D11ShaderResourceView*, 6> nullSrvs = {};
+    std::array<ID3D11ShaderResourceView*, 7> nullSrvs = {};
     std::array<ID3D11UnorderedAccessView*, 4> nullUavs = {};
     std::array<ID3D11SamplerState*, 1> nullSamplers = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
@@ -702,6 +744,7 @@ RenderConstants makeConstants(
     c.maxDistanceToZero = std::max(settings.maxDistanceToZero, 1.0e-4f);
     c.msAttenuationScale = std::max(settings.msAttenuationScale, 0.0f);
     c.ambientLightColor = settings.ambientLightColor;
+    c.coarseDistanceSafetyMargin = std::max(volume.coarseSignedDistance.safetyMargin, 0.0f);
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));
@@ -712,7 +755,7 @@ RenderConstants makeConstants(
 
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
-    if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
+    if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.coarseSignedDistanceSrv || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
         clearBackbuffer(d3d);
         return;
     }
@@ -729,11 +772,12 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         nullptr,
         d3d.signedDistanceSrv.Get(),
         d3d.nubisNoiseSrv.Get(),
+        d3d.coarseSignedDistanceSrv.Get(),
     };
     ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr};
     ID3D11SamplerState* renderSamplers[] = {d3d.volumeSampler.Get()};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 6, renderSrvs);
+    d3d.context->CSSetShaderResources(0, 7, renderSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 4, renderUavs, nullptr);
     d3d.context->CSSetSamplers(0, 1, renderSamplers);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);

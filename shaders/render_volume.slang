@@ -99,8 +99,8 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     pnanovdb_coord_t coord = ijk;
     pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
-    gVolumeSampleCount += pnanovdb_readaccessor_is_active(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord); // this is accurate but has heavy overhead!
-    // gVolumeSampleCount += 1;
+    // gVolumeSampleCount += pnanovdb_readaccessor_is_active(PNANOVDB_GRID_TYPE_FLOAT, gNanoVdb, accessor, coord); // this is accurate but has heavy overhead!
+    gVolumeSampleCount += 1;
 #endif
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
@@ -292,6 +292,27 @@ float primaryRayStepLength(float3 worldPosition)
     return max(minStep, sqrt(distanceFromCamera) * distanceScale);
 }
 
+float sampleCoarseSignedDistance(float3 worldPosition)
+{
+    uint width;
+    uint height;
+    uint depth;
+    gCoarseSignedDistance.GetDimensions(width, height, depth);
+
+    float3 extent = max(volumeWorldMax - volumeWorldMin, float3(1.0e-6f, 1.0e-6f, 1.0e-6f));
+    float3 uvw = saturate((worldPosition - volumeWorldMin) / extent);
+    uint3 coord = min(uint3(uvw * float3(width, height, depth)), uint3(width - 1u, height - 1u, depth - 1u));
+    return gCoarseSignedDistance.Load(int4(coord, 0));
+}
+
+float acceleratedPrimaryRayStepLength(float3 worldPosition)
+{
+    float baseStep = primaryRayStepLength(worldPosition);
+    float coarseDistance = sampleCoarseSignedDistance(worldPosition);
+    float outsideStep = max(coarseDistance - max(coarseDistanceSafetyMargin, 0.0f), 0.0f);
+    return max(baseStep, outsideStep);
+}
+
 float3 estimateLightTransmittance(
     float3 worldPosition,
     pnanovdb_grid_handle_t grid,
@@ -398,7 +419,7 @@ float3 renderRaymarchSample(
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
         float3 position = rayOrigin + rayDirection * t;
-        float dt = min(primaryRayStepLength(position), t1 - t);
+        float dt = min(acceleratedPrimaryRayStepLength(position), t1 - t);
         if (dt <= 0.0f) {
             break;
         }

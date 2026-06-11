@@ -89,6 +89,8 @@ bool loadVolumeIntoRenderer(
 
         std::cout << "Loaded " << path << " grid=" << currentVolume->gridName << " bytes=" << currentVolume->handle.size()
                   << " sdf_bytes=" << currentVolume->signedDistanceHandle.size()
+                  << " coarse_sdf=" << currentVolume->coarseSignedDistance.size[0] << "x" << currentVolume->coarseSignedDistance.size[1]
+                  << "x" << currentVolume->coarseSignedDistance.size[2]
                   << " max_distance_to_zero=" << currentVolume->maxDistanceToZero
                   << " native_up=+" << axisName(currentVolume->nativeUpAxis) << "\n";
         return true;
@@ -243,6 +245,8 @@ void runCheck(const std::filesystem::path& volumePath)
     checkShaders(executableDirectory() / "shaders");
     std::cout << "OK: " << volumePath << " grid=" << volume.gridName << " nanovdb_bytes=" << volume.handle.size()
               << " sdf_nanovdb_bytes=" << volume.signedDistanceHandle.size()
+              << " coarse_sdf=" << volume.coarseSignedDistance.size[0] << "x" << volume.coarseSignedDistance.size[1]
+              << "x" << volume.coarseSignedDistance.size[2]
               << " max_distance_to_zero=" << volume.maxDistanceToZero
               << " native_up=+" << axisName(volume.nativeUpAxis)
               << " render_bounds_min=(" << volume.worldMin.x << "," << volume.worldMin.y << "," << volume.worldMin.z << ")"

@@ -84,6 +84,12 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
         controlHint("Maximum active voxel density in the loaded volume before the UI Density multiplier.");
         ImGui::Text("Max distance to zero %.6g", volume->maxDistanceToZero);
         controlHint("Maximum signed-distance magnitude stored in the generated companion volume.");
+        ImGui::Text(
+            "Coarse SDF %ux%ux%u",
+            volume->coarseSignedDistance.size[0],
+            volume->coarseSignedDistance.size[1],
+            volume->coarseSignedDistance.size[2]);
+        controlHint("Resolution of the coarse signed-distance texture used to skip empty primary ray space.");
         ImGui::Text("Scaled max density %.6g", volume->maxDensity * settings.densityMultiplier);
         controlHint("Maximum active voxel density after the current UI Density multiplier.");
     } else {

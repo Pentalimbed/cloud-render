@@ -15,6 +15,8 @@
 #include <nanovdb/tools/NanoToOpenVDB.h>
 #include <openvdb/io/File.h>
 #include <openvdb/openvdb.h>
+#include <openvdb/tools/FastSweeping.h>
+#include <openvdb/tools/Interpolation.h>
 
 namespace cloud_render {
 namespace {
@@ -45,6 +47,12 @@ struct DenseBounds {
     openvdb::Coord max;
     std::array<uint32_t, 3> size = {};
     size_t voxelCount = 0;
+};
+
+struct SignedDistanceGrids {
+    openvdb::FloatGrid::Ptr profileGrid;
+    openvdb::FloatGrid::Ptr fullGrid;
+    float maxDistanceToZero = 0.0f;
 };
 
 template <typename GridT>
@@ -147,13 +155,13 @@ float maxActiveDensity(const openvdb::FloatGrid& grid)
     return hasValue ? maxDensity : 0.0f;
 }
 
-DenseBounds makeDenseBounds(const openvdb::CoordBBox& activeBBox)
+DenseBounds makeDenseBounds(const openvdb::CoordBBox& activeBBox, int padding = 0)
 {
     DenseBounds bounds;
     bounds.min = activeBBox.min();
     bounds.max = activeBBox.max();
-    bounds.min.offsetBy(-1);
-    bounds.max.offsetBy(1);
+    bounds.min.offsetBy(-padding);
+    bounds.max.offsetBy(padding);
 
     const int64_t sizeX = static_cast<int64_t>(bounds.max.x()) - static_cast<int64_t>(bounds.min.x()) + 1;
     const int64_t sizeY = static_cast<int64_t>(bounds.max.y()) - static_cast<int64_t>(bounds.min.y()) + 1;
@@ -165,7 +173,7 @@ DenseBounds makeDenseBounds(const openvdb::CoordBBox& activeBBox)
     constexpr uint64_t kMaxDistanceTransformSamples = 256ull * 1024ull * 1024ull;
     const uint64_t voxelCount = static_cast<uint64_t>(sizeX) * static_cast<uint64_t>(sizeY) * static_cast<uint64_t>(sizeZ);
     if (voxelCount > kMaxDistanceTransformSamples) {
-        throw std::runtime_error("VDB active bounds are too large for dense distance transform");
+        throw std::runtime_error("VDB active bounds are too large for OpenVDB SDF generation");
     }
 
     bounds.size = {
@@ -182,129 +190,45 @@ size_t denseIndex(uint32_t x, uint32_t y, uint32_t z, const std::array<uint32_t,
     return (static_cast<size_t>(z) * size[1] + y) * size[0] + x;
 }
 
-float axisWorldScale(const openvdb::FloatGrid& grid, int axis)
+uint32_t clampedCoarseSize(uint32_t fineSize)
 {
-    const openvdb::Vec3d origin = grid.transform().indexToWorld(openvdb::Vec3d(0.0, 0.0, 0.0));
-    openvdb::Vec3d unit(0.0, 0.0, 0.0);
-    unit[axis] = 1.0;
-    const openvdb::Vec3d mapped = grid.transform().indexToWorld(unit);
-    const openvdb::Vec3d delta = mapped - origin;
-    const double lengthSquared = delta.dot(delta);
-    return static_cast<float>(std::sqrt(std::max(lengthSquared, 1.0e-12)));
+    constexpr uint32_t kCoarseDistanceDownsample = 4;
+    constexpr uint32_t kMaxCoarseDistanceResolution = 128;
+    const uint32_t downsampled = (fineSize + kCoarseDistanceDownsample - 1u) / kCoarseDistanceDownsample;
+    return std::clamp(downsampled, 1u, kMaxCoarseDistanceResolution);
 }
 
-void distanceTransformLine(
-    const std::vector<float>& input,
-    std::vector<float>& output,
-    std::vector<int>& parabolaSites,
-    std::vector<double>& boundaries,
-    float spacing)
-{
-    const int count = static_cast<int>(input.size());
-    if (count == 0) {
-        return;
-    }
-
-    const double spacingSquared = static_cast<double>(spacing) * static_cast<double>(spacing);
-    int envelopeSize = -1;
-    for (int q = 0; q < count; ++q) {
-        if (!std::isfinite(input[q])) {
-            continue;
-        }
-
-        double boundary = -std::numeric_limits<double>::infinity();
-        while (envelopeSize >= 0) {
-            const int p = parabolaSites[envelopeSize];
-            const double qTerm = static_cast<double>(input[q]) + spacingSquared * static_cast<double>(q) * static_cast<double>(q);
-            const double pTerm = static_cast<double>(input[p]) + spacingSquared * static_cast<double>(p) * static_cast<double>(p);
-            boundary = (qTerm - pTerm) / (2.0 * spacingSquared * static_cast<double>(q - p));
-            if (boundary > boundaries[envelopeSize]) {
-                break;
-            }
-            --envelopeSize;
-        }
-
-        ++envelopeSize;
-        parabolaSites[envelopeSize] = q;
-        boundaries[envelopeSize] = envelopeSize == 0 ? -std::numeric_limits<double>::infinity() : boundary;
-        boundaries[envelopeSize + 1] = std::numeric_limits<double>::infinity();
-    }
-
-    if (envelopeSize < 0) {
-        std::fill(output.begin(), output.end(), std::numeric_limits<float>::infinity());
-        return;
-    }
-
-    int envelopeIndex = 0;
-    for (int q = 0; q < count; ++q) {
-        while (boundaries[envelopeIndex + 1] < static_cast<double>(q)) {
-            ++envelopeIndex;
-        }
-        const int p = parabolaSites[envelopeIndex];
-        const double delta = static_cast<double>(q - p);
-        output[q] = static_cast<float>(spacingSquared * delta * delta + static_cast<double>(input[p]));
-    }
-}
-
-void transformAxis(
-    const std::vector<float>& input,
-    std::vector<float>& output,
-    const std::array<uint32_t, 3>& size,
-    int axis,
-    float spacing)
-{
-    const uint32_t lineLength = size[axis];
-    std::vector<float> line(lineLength);
-    std::vector<float> transformed(lineLength);
-    std::vector<int> parabolaSites(lineLength);
-    std::vector<double> boundaries(static_cast<size_t>(lineLength) + 1u);
-
-    const auto sourceIndex = [axis, &size](uint32_t lineCoord, uint32_t outerA, uint32_t outerB) {
-        uint32_t x = 0;
-        uint32_t y = 0;
-        uint32_t z = 0;
-        if (axis == 0) {
-            x = lineCoord;
-            y = outerA;
-            z = outerB;
-        } else if (axis == 1) {
-            x = outerA;
-            y = lineCoord;
-            z = outerB;
-        } else {
-            x = outerA;
-            y = outerB;
-            z = lineCoord;
-        }
-        return denseIndex(x, y, z, size);
-    };
-
-    const uint32_t outerASize = axis == 0 ? size[1] : size[0];
-    const uint32_t outerBSize = axis == 2 ? size[1] : size[2];
-    for (uint32_t outerB = 0; outerB < outerBSize; ++outerB) {
-        for (uint32_t outerA = 0; outerA < outerASize; ++outerA) {
-            for (uint32_t lineCoord = 0; lineCoord < lineLength; ++lineCoord) {
-                line[lineCoord] = input[sourceIndex(lineCoord, outerA, outerB)];
-            }
-
-            distanceTransformLine(line, transformed, parabolaSites, boundaries, spacing);
-
-            for (uint32_t lineCoord = 0; lineCoord < lineLength; ++lineCoord) {
-                output[sourceIndex(lineCoord, outerA, outerB)] = transformed[lineCoord];
-            }
-        }
-    }
-}
-
-openvdb::FloatGrid::Ptr createSignedDistanceGrid(const openvdb::FloatGrid& densityGrid, const openvdb::CoordBBox& activeBBox, float& maxDistanceToZero)
+std::array<uint32_t, 3> makeCoarseDistanceSize(const openvdb::CoordBBox& activeBBox)
 {
     const DenseBounds bounds = makeDenseBounds(activeBBox);
-    const float infinity = std::numeric_limits<float>::infinity();
+    return {
+        clampedCoarseSize(bounds.size[0]),
+        clampedCoarseSize(bounds.size[1]),
+        clampedCoarseSize(bounds.size[2]),
+    };
+}
 
-    std::vector<float> distanceSquared(bounds.voxelCount, infinity);
-    std::vector<float> scratch(bounds.voxelCount, infinity);
+uint32_t coarseIndexForWorld(float value, float minValue, float extent, uint32_t size)
+{
+    if (size <= 1u || extent <= 1.0e-6f) {
+        return 0u;
+    }
+    const float normalized = std::clamp((value - minValue) / extent, 0.0f, 0.99999994f);
+    return std::min(static_cast<uint32_t>(normalized * static_cast<float>(size)), size - 1u);
+}
+
+openvdb::FloatGrid::Ptr createBinaryFogGrid(const openvdb::FloatGrid& densityGrid, const openvdb::CoordBBox& activeBBox, bool& hasPositiveDensity)
+{
+    const DenseBounds bounds = makeDenseBounds(activeBBox, 1);
+    openvdb::FloatGrid::Ptr fogGrid = openvdb::FloatGrid::create(0.0f);
+    fogGrid->setTransform(densityGrid.transform().copy());
+    fogGrid->setGridClass(openvdb::GRID_FOG_VOLUME);
+    fogGrid->setName("positive_density_mask");
 
     openvdb::FloatGrid::ConstAccessor densityAccessor = densityGrid.getConstAccessor();
+    openvdb::FloatGrid::Accessor fogAccessor = fogGrid->getAccessor();
+    hasPositiveDensity = false;
+
     for (uint32_t z = 0; z < bounds.size[2]; ++z) {
         for (uint32_t y = 0; y < bounds.size[1]; ++y) {
             for (uint32_t x = 0; x < bounds.size[0]; ++x) {
@@ -312,40 +236,146 @@ openvdb::FloatGrid::Ptr createSignedDistanceGrid(const openvdb::FloatGrid& densi
                     bounds.min.x() + static_cast<int>(x),
                     bounds.min.y() + static_cast<int>(y),
                     bounds.min.z() + static_cast<int>(z));
-                if (densityAccessor.getValue(coord) <= 0.0f) {
-                    distanceSquared[denseIndex(x, y, z, bounds.size)] = 0.0f;
+                const float occupied = densityAccessor.getValue(coord) > 0.0f ? 1.0f : 0.0f;
+                hasPositiveDensity = hasPositiveDensity || occupied > 0.0f;
+                fogAccessor.setValueOn(coord, occupied);
+            }
+        }
+    }
+
+    return fogGrid;
+}
+
+openvdb::FloatGrid::Ptr createZeroSignedDistanceGrid(const openvdb::FloatGrid& densityGrid)
+{
+    openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(0.0f);
+    grid->setTransform(densityGrid.transform().copy());
+    grid->setGridClass(openvdb::GRID_LEVEL_SET);
+    const std::string sourceName = densityGrid.getName();
+    grid->setName(sourceName.empty() ? "distance_to_zero" : sourceName + "_distance_to_zero");
+    return grid;
+}
+
+SignedDistanceGrids createSignedDistanceGrids(const openvdb::FloatGrid& densityGrid, const openvdb::CoordBBox& activeBBox)
+{
+    bool hasPositiveDensity = false;
+    openvdb::FloatGrid::Ptr binaryFogGrid = createBinaryFogGrid(densityGrid, activeBBox, hasPositiveDensity);
+    openvdb::FloatGrid::Ptr fullSignedDistanceGrid;
+    if (hasPositiveDensity) {
+        fullSignedDistanceGrid = openvdb::tools::fogToSdf(*binaryFogGrid, 0.5f, 1);
+        if (!fullSignedDistanceGrid) {
+            throw std::runtime_error("OpenVDB fogToSdf did not produce a signed-distance grid");
+        }
+        fullSignedDistanceGrid->setTransform(densityGrid.transform().copy());
+        fullSignedDistanceGrid->setGridClass(openvdb::GRID_LEVEL_SET);
+    } else {
+        fullSignedDistanceGrid = createZeroSignedDistanceGrid(densityGrid);
+    }
+
+    openvdb::FloatGrid::Ptr profileGrid = createZeroSignedDistanceGrid(densityGrid);
+    openvdb::FloatGrid::ConstAccessor sdfAccessor = fullSignedDistanceGrid->getConstAccessor();
+    openvdb::FloatGrid::Accessor profileAccessor = profileGrid->getAccessor();
+
+    float maxDistanceToZero = 0.0f;
+    for (openvdb::FloatGrid::ValueOnCIter iter = densityGrid.cbeginValueOn(); iter; ++iter) {
+        const openvdb::Coord coord = iter.getCoord();
+        float signedDistance = 0.0f;
+        if (iter.getValue() > 0.0f) {
+            signedDistance = sdfAccessor.getValue(coord);
+            if (!std::isfinite(signedDistance)) {
+                signedDistance = 0.0f;
+            }
+            signedDistance = std::min(signedDistance, 0.0f);
+            maxDistanceToZero = std::max(maxDistanceToZero, -signedDistance);
+        }
+
+        profileAccessor.setValueOn(coord, signedDistance);
+    }
+
+    SignedDistanceGrids result;
+    result.profileGrid = std::move(profileGrid);
+    result.fullGrid = std::move(fullSignedDistanceGrid);
+    result.maxDistanceToZero = maxDistanceToZero;
+    return result;
+}
+
+openvdb::Vec3d lerpVec3(Vec3 minValue, Vec3 maxValue, double x, double y, double z)
+{
+    return {
+        static_cast<double>(minValue.x) + (static_cast<double>(maxValue.x) - static_cast<double>(minValue.x)) * x,
+        static_cast<double>(minValue.y) + (static_cast<double>(maxValue.y) - static_cast<double>(minValue.y)) * y,
+        static_cast<double>(minValue.z) + (static_cast<double>(maxValue.z) - static_cast<double>(minValue.z)) * z,
+    };
+}
+
+CoarseSignedDistanceVolume createCoarseSignedDistanceVolume(
+    const openvdb::FloatGrid& signedDistanceGrid,
+    const openvdb::CoordBBox& activeBBox,
+    Vec3 worldMin,
+    Vec3 worldMax)
+{
+    CoarseSignedDistanceVolume result;
+    result.size = makeCoarseDistanceSize(activeBBox);
+    result.values.assign(
+        static_cast<size_t>(result.size[0]) * static_cast<size_t>(result.size[1]) * static_cast<size_t>(result.size[2]),
+        std::numeric_limits<float>::infinity());
+
+    const Vec3 extent = worldMax - worldMin;
+    const Vec3 cellExtent = {
+        extent.x / static_cast<float>(std::max(result.size[0], 1u)),
+        extent.y / static_cast<float>(std::max(result.size[1], 1u)),
+        extent.z / static_cast<float>(std::max(result.size[2], 1u)),
+    };
+    result.safetyMargin = length(cellExtent);
+
+    openvdb::FloatGrid::ConstAccessor sdfAccessor = signedDistanceGrid.getConstAccessor();
+    const DenseBounds sourceBounds = makeDenseBounds(activeBBox);
+    for (uint32_t z = 0; z < sourceBounds.size[2]; ++z) {
+        for (uint32_t y = 0; y < sourceBounds.size[1]; ++y) {
+            for (uint32_t x = 0; x < sourceBounds.size[0]; ++x) {
+                const openvdb::Coord coord(
+                    sourceBounds.min.x() + static_cast<int>(x),
+                    sourceBounds.min.y() + static_cast<int>(y),
+                    sourceBounds.min.z() + static_cast<int>(z));
+                const float signedDistance = sdfAccessor.getValue(coord);
+                if (!std::isfinite(signedDistance)) {
+                    continue;
+                }
+
+                const openvdb::Vec3d world = signedDistanceGrid.transform().indexToWorld(coord);
+                const uint32_t cx = coarseIndexForWorld(static_cast<float>(world.x()), worldMin.x, extent.x, result.size[0]);
+                const uint32_t cy = coarseIndexForWorld(static_cast<float>(world.y()), worldMin.y, extent.y, result.size[1]);
+                const uint32_t cz = coarseIndexForWorld(static_cast<float>(world.z()), worldMin.z, extent.z, result.size[2]);
+                float& cell = result.values[denseIndex(cx, cy, cz, result.size)];
+                cell = std::min(cell, signedDistance);
+            }
+        }
+    }
+
+    openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::BoxSampler> sampler(signedDistanceGrid);
+    for (uint32_t z = 0; z < result.size[2]; ++z) {
+        for (uint32_t y = 0; y < result.size[1]; ++y) {
+            for (uint32_t x = 0; x < result.size[0]; ++x) {
+                float& cell = result.values[denseIndex(x, y, z, result.size)];
+                if (std::isfinite(cell)) {
+                    continue;
+                }
+
+                const openvdb::Vec3d world = lerpVec3(
+                    worldMin,
+                    worldMax,
+                    (static_cast<double>(x) + 0.5) / static_cast<double>(result.size[0]),
+                    (static_cast<double>(y) + 0.5) / static_cast<double>(result.size[1]),
+                    (static_cast<double>(z) + 0.5) / static_cast<double>(result.size[2]));
+                cell = sampler.wsSample(world);
+                if (!std::isfinite(cell)) {
+                    cell = 0.0f;
                 }
             }
         }
     }
 
-    transformAxis(distanceSquared, scratch, bounds.size, 0, axisWorldScale(densityGrid, 0));
-    transformAxis(scratch, distanceSquared, bounds.size, 1, axisWorldScale(densityGrid, 1));
-    transformAxis(distanceSquared, scratch, bounds.size, 2, axisWorldScale(densityGrid, 2));
-
-    openvdb::FloatGrid::Ptr signedDistanceGrid = openvdb::FloatGrid::create(0.0f);
-    signedDistanceGrid->setTransform(densityGrid.transform().copy());
-    signedDistanceGrid->setGridClass(openvdb::GRID_LEVEL_SET);
-    const std::string sourceName = densityGrid.getName();
-    signedDistanceGrid->setName(sourceName.empty() ? "distance_to_zero" : sourceName + "_distance_to_zero");
-
-    maxDistanceToZero = 0.0f;
-    openvdb::FloatGrid::Accessor sdfAccessor = signedDistanceGrid->getAccessor();
-    for (openvdb::FloatGrid::ValueOnCIter iter = densityGrid.cbeginValueOn(); iter; ++iter) {
-        const openvdb::Coord coord = iter.getCoord();
-        const uint32_t x = static_cast<uint32_t>(coord.x() - bounds.min.x());
-        const uint32_t y = static_cast<uint32_t>(coord.y() - bounds.min.y());
-        const uint32_t z = static_cast<uint32_t>(coord.z() - bounds.min.z());
-        const float distance = std::sqrt(scratch[denseIndex(x, y, z, bounds.size)]);
-        if (!std::isfinite(distance)) {
-            continue;
-        }
-
-        maxDistanceToZero = std::max(maxDistanceToZero, distance);
-        sdfAccessor.setValueOn(coord, iter.getValue() > 0.0f ? -distance : 0.0f);
-    }
-
-    return signedDistanceGrid;
+    return result;
 }
 
 int shortestAxis(Vec3 extent)
@@ -423,8 +453,10 @@ void createNanoVolumeHandles(openvdb::FloatGrid& grid, Volume& volume, const ope
         throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float grid");
     }
 
-    openvdb::FloatGrid::Ptr signedDistanceGrid = createSignedDistanceGrid(grid, activeBBox, volume.maxDistanceToZero);
-    volume.signedDistanceHandle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(*signedDistanceGrid);
+    SignedDistanceGrids signedDistance = createSignedDistanceGrids(grid, activeBBox);
+    volume.maxDistanceToZero = signedDistance.maxDistanceToZero;
+    volume.coarseSignedDistance = createCoarseSignedDistanceVolume(*signedDistance.fullGrid, activeBBox, volume.worldMin, volume.worldMax);
+    volume.signedDistanceHandle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(*signedDistance.profileGrid);
     if (!volume.signedDistanceHandle.grid<float>()) {
         throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float signed-distance grid");
     }

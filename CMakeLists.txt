@@ -20,6 +20,7 @@ set(SHADER_COMMON
     "${CMAKE_CURRENT_SOURCE_DIR}/shaders/phase.slang"
 )
 set(SHADER_PASSES
+    updateShadowVolume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/update_shadow_volume.slang"
     renderVolume "${CMAKE_CURRENT_SOURCE_DIR}/shaders/render_volume.slang"
     temporalDenoise "${CMAKE_CURRENT_SOURCE_DIR}/shaders/temporal_denoise.slang"
     tonemap "${CMAKE_CURRENT_SOURCE_DIR}/shaders/tonemap.slang"

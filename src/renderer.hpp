@@ -48,12 +48,15 @@ struct RenderSettings {
     float particleDiameterMicrons = 20.0f;
     float exposure = 1.0f;
     float temporalBlend = 0.88f;
-    float stepJitter = 1.0f;
     float densityMajorant = 1.0f;
     int pathHistoryMode = 0;
     float raymarchPrimaryMinStep = 1.0f;
     float raymarchPrimaryStepScale = 0.3f;
     int raymarchShadowSteps = 16;
+    int shadowVolumeUpdateFrames = 8;
+    float shadowVolumeStepLength = 128.0f;
+    float shadowLocalSampleOffset0 = 16.0f;
+    float shadowLocalSampleOffset1 = 64.0f;
     int pathMaxBounces = 8;
     float nubisDetailType = 0.5f;
     float nubisNoiseScale = 178.7f;
@@ -84,7 +87,7 @@ struct RenderConstants {
     float exposure;
 
     Vec3 absorption;
-    float stepJitter;
+    float _absorptionPad0;
 
     Vec3 scattering;
     float densityMajorant;
@@ -118,6 +121,16 @@ struct RenderConstants {
     Vec3 ambientLightColor;
     float coarseDistanceSafetyMargin;
 
+    uint32_t shadowUpdateFrame;
+    uint32_t shadowUpdateFrames;
+    float shadowVolumeStepLength;
+    float shadowLocalSampleOffset0;
+
+    float shadowLocalSampleOffset1;
+    float _shadowPad0;
+    float _shadowPad1;
+    float _shadowPad2;
+
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
     float debugSampleCountScale;
@@ -135,6 +148,7 @@ struct TextureResource {
 };
 
 struct Shaders {
+    Microsoft::WRL::ComPtr<ID3D11ComputeShader> updateShadowVolume;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> render;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> denoise;
     Microsoft::WRL::ComPtr<ID3D11ComputeShader> tonemap;
@@ -159,6 +173,9 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> signedDistanceSrv;
     Microsoft::WRL::ComPtr<ID3D11Texture3D> coarseSignedDistanceTexture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> coarseSignedDistanceSrv;
+    Microsoft::WRL::ComPtr<ID3D11Texture3D> shadowVolumeTexture;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> shadowVolumeSrv;
+    Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> shadowVolumeUav;
     Microsoft::WRL::ComPtr<ID3D11Texture3D> nubisNoiseTexture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nubisNoiseSrv;
     Microsoft::WRL::ComPtr<ID3D11SamplerState> volumeSampler;

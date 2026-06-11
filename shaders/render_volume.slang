@@ -126,6 +126,11 @@ float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor
     return pnanovdb_read_float(gDistanceNanoVdb, address);
 }
 
+int3 nearestIndex(float3 indexPosition)
+{
+    return int3(floor(indexPosition + 0.5f));
+}
+
 float valueRemap(float value, float oldMin, float oldMax, float newMin, float newMax)
 {
     float oldRange = max(oldMax - oldMin, 1.0e-6f);
@@ -204,22 +209,18 @@ float getUprezzedVoxelCloudDensity(float rayDistance, float3 samplePosition, flo
     return uprezzedDensity;
 }
 
-VolumeDensitySample sampleDensityWorld(
+VolumeDensitySample sampleDensityWorldAtIndex(
     float3                        worldPosition,
     float                         rayDistance,
-    pnanovdb_grid_handle_t        grid,
+    int3                          sampleIndex,
     inout pnanovdb_readaccessor_t densityAccessor,
-    pnanovdb_grid_handle_t        distanceGrid,
     inout pnanovdb_readaccessor_t distanceAccessor,
-    inout uint                    rng)
+    bool                          useHighFrequencyDetails)
 {
     VolumeDensitySample sample;
     sample.density = 0.0f;
     sample.dimensionalProfile = 0.0f;
     sample.boundaryDepth = 0.0f;
-
-    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
-    int3 sampleIndex = stochasticLinearIndex(indexPosition, rng);
 
     float baseDensity = readDensityAtCoord(sampleIndex, densityAccessor);
     if (baseDensity <= 0.0f) {
@@ -233,10 +234,36 @@ VolumeDensitySample sampleDensityWorld(
         return sample;
     }
 
-    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, sample.dimensionalProfile, nubisDetailType, true);
+    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, sample.dimensionalProfile, nubisDetailType, useHighFrequencyDetails);
     detailDensity *= valueRemap(rayDistance, 10.0f, 120.0f, 0.25f, 1.0f);
     sample.density = baseDensity * detailDensity * densityMultiplier;
     return sample;
+}
+
+VolumeDensitySample sampleDensityWorld(
+    float3                        worldPosition,
+    float                         rayDistance,
+    pnanovdb_grid_handle_t        grid,
+    inout pnanovdb_readaccessor_t densityAccessor,
+    pnanovdb_grid_handle_t        distanceGrid,
+    inout pnanovdb_readaccessor_t distanceAccessor,
+    inout uint                    rng)
+{
+    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
+    int3 sampleIndex = stochasticLinearIndex(indexPosition, rng);
+    return sampleDensityWorldAtIndex(worldPosition, rayDistance, sampleIndex, densityAccessor, distanceAccessor, true);
+}
+
+VolumeDensitySample sampleDensityWorldFixed(
+    float3                        worldPosition,
+    float                         rayDistance,
+    pnanovdb_grid_handle_t        grid,
+    inout pnanovdb_readaccessor_t densityAccessor,
+    pnanovdb_grid_handle_t        distanceGrid,
+    inout pnanovdb_readaccessor_t distanceAccessor)
+{
+    float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
+    return sampleDensityWorldAtIndex(worldPosition, rayDistance, nearestIndex(indexPosition), densityAccessor, distanceAccessor, true);
 }
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -311,6 +338,47 @@ float acceleratedPrimaryRayStepLength(float3 worldPosition)
     float coarseDistance = sampleCoarseSignedDistance(worldPosition);
     float outsideStep = max(coarseDistance - max(coarseDistanceSafetyMargin, 0.0f), 0.0f);
     return max(baseStep, outsideStep);
+}
+
+float sampleShadowSummedDensity(float3 worldPosition)
+{
+    float3 extent = max(volumeWorldMax - volumeWorldMin, float3(1.0e-6f, 1.0e-6f, 1.0e-6f));
+    float3 uvw = (worldPosition - volumeWorldMin) / extent;
+    if (any(uvw < float3(0.0f, 0.0f, 0.0f)) || any(uvw > float3(1.0f, 1.0f, 1.0f))) {
+        return 0.0f;
+    }
+    return max(0.0f, gShadowSummedDensity.SampleLevel(gVolumeSampler, uvw, 0.0f));
+}
+
+float3 estimateCachedLightTransmittance(
+    float3 worldPosition,
+    pnanovdb_grid_handle_t grid,
+    pnanovdb_root_handle_t root,
+    pnanovdb_grid_handle_t distanceGrid,
+    pnanovdb_root_handle_t distanceRoot,
+    inout uint rng)
+{
+    float firstLimit = max(shadowLocalSampleOffset0, 0.0f);
+    float secondLimit = max(shadowLocalSampleOffset1, firstLimit + 0.001f);
+    float firstSegment = firstLimit;
+    float secondSegment = max(secondLimit - firstLimit, 0.001f);
+    float firstOffset = rand01(rng) * firstSegment;
+    float secondOffset = firstLimit + rand01(rng) * secondSegment;
+
+    pnanovdb_readaccessor_t densityAccessor;
+    pnanovdb_readaccessor_init(densityAccessor, root);
+    pnanovdb_readaccessor_t distanceAccessor;
+    pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+
+    float3 p0 = worldPosition + lightDirection * firstOffset;
+    float3 p1 = worldPosition + lightDirection * secondOffset;
+    VolumeDensitySample s0 = sampleDensityWorldFixed(p0, length(p0 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor);
+    VolumeDensitySample s1 = sampleDensityWorldFixed(p1, length(p1 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor);
+
+    float summedDensity = s0.density * firstSegment + s1.density * secondSegment;
+    summedDensity += sampleShadowSummedDensity(worldPosition + lightDirection * secondLimit);
+
+    return transmittanceFromOpticalDepth(max(absorption + scattering, float3(0.0f, 0.0f, 0.0f)) * summedDensity);
 }
 
 float3 estimateLightTransmittance(
@@ -405,7 +473,7 @@ float3 renderRaymarchSample(
     }
 
     t0 = max(t0, 0.0f);
-    float jitter = lerp(0.5f, rand01(rng), saturate(stepJitter));
+    float jitter = rand01(rng);
     float t = t0 + primaryRayStepLength(rayOrigin + rayDirection * t0) * jitter;
 
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
@@ -427,7 +495,7 @@ float3 renderRaymarchSample(
         VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
         if (sample.density > 0.0f) {
             float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
-            float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, raymarchShadowSteps, rng);
+            float3 lightTr = estimateCachedLightTransmittance(position, grid, root, distanceGrid, distanceRoot, rng);
             float phaseCosine = dot(lightDirection, rayDirection);
             float phase = evalPhase(phaseCosine);
             float3 scatterBase = throughput * scattering * sample.density * dt;

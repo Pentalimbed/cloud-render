@@ -20,6 +20,10 @@ namespace {
 
 using Microsoft::WRL::ComPtr;
 
+constexpr uint32_t kShadowVolumeWidth = 256;
+constexpr uint32_t kShadowVolumeHeight = 256;
+constexpr uint32_t kShadowVolumeDepth = 32;
+
 struct CloudPhaseParameters {
     float gHg = 0.0f;
     float gD = 0.0f;
@@ -191,6 +195,7 @@ ComPtr<ID3D11ComputeShader> compileComputeShader(ID3D11Device* device, const std
 Shaders loadShaders(ID3D11Device* device, const std::filesystem::path& shaderDir)
 {
     Shaders shaders;
+    shaders.updateShadowVolume = compileComputeShader(device, shaderDir / "updateShadowVolume.hlsl", "updateShadowVolume");
     shaders.render = compileComputeShader(device, shaderDir / "renderVolume.hlsl", "renderVolume");
     shaders.denoise = compileComputeShader(device, shaderDir / "temporalDenoise.hlsl", "temporalDenoise");
     shaders.tonemap = compileComputeShader(device, shaderDir / "tonemap.hlsl", "tonemap");
@@ -424,6 +429,57 @@ void createCoarseSignedDistanceTexture(D3DState& d3d, const CoarseSignedDistance
         "CreateShaderResourceView failed for coarse signed-distance volume");
 }
 
+void clearShadowVolume(D3DState& d3d)
+{
+    if (!d3d.shadowVolumeUav) {
+        return;
+    }
+
+    const float clearValue[4] = {};
+    d3d.context->ClearUnorderedAccessViewFloat(d3d.shadowVolumeUav.Get(), clearValue);
+}
+
+void createShadowVolumeTexture(D3DState& d3d)
+{
+    d3d.shadowVolumeTexture.Reset();
+    d3d.shadowVolumeSrv.Reset();
+    d3d.shadowVolumeUav.Reset();
+
+    D3D11_TEXTURE3D_DESC desc = {};
+    desc.Width = kShadowVolumeWidth;
+    desc.Height = kShadowVolumeHeight;
+    desc.Depth = kShadowVolumeDepth;
+    desc.MipLevels = 1;
+    desc.Format = DXGI_FORMAT_R32_FLOAT;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
+
+    throwIfFailed(
+        d3d.device->CreateTexture3D(&desc, nullptr, d3d.shadowVolumeTexture.GetAddressOf()),
+        "CreateTexture3D failed for shadow volume");
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+    srvDesc.Format = desc.Format;
+    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+    srvDesc.Texture3D.MostDetailedMip = 0;
+    srvDesc.Texture3D.MipLevels = 1;
+    throwIfFailed(
+        d3d.device->CreateShaderResourceView(d3d.shadowVolumeTexture.Get(), &srvDesc, d3d.shadowVolumeSrv.GetAddressOf()),
+        "CreateShaderResourceView failed for shadow volume");
+
+    D3D11_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
+    uavDesc.Format = desc.Format;
+    uavDesc.ViewDimension = D3D11_UAV_DIMENSION_TEXTURE3D;
+    uavDesc.Texture3D.MipSlice = 0;
+    uavDesc.Texture3D.FirstWSlice = 0;
+    uavDesc.Texture3D.WSize = desc.Depth;
+    throwIfFailed(
+        d3d.device->CreateUnorderedAccessView(d3d.shadowVolumeTexture.Get(), &uavDesc, d3d.shadowVolumeUav.GetAddressOf()),
+        "CreateUnorderedAccessView failed for shadow volume");
+
+    clearShadowVolume(d3d);
+}
+
 void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 {
     createNanoVdbBuffer(d3d.device.Get(), volume.handle, d3d.volumeBuffer, d3d.volumeSrv, "density");
@@ -438,8 +494,8 @@ void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 
 void unbindComputeResources(ID3D11DeviceContext* context)
 {
-    std::array<ID3D11ShaderResourceView*, 7> nullSrvs = {};
-    std::array<ID3D11UnorderedAccessView*, 4> nullUavs = {};
+    std::array<ID3D11ShaderResourceView*, 8> nullSrvs = {};
+    std::array<ID3D11UnorderedAccessView*, 5> nullUavs = {};
     std::array<ID3D11SamplerState*, 1> nullSamplers = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
@@ -449,6 +505,11 @@ void unbindComputeResources(ID3D11DeviceContext* context)
 void dispatch2D(ID3D11DeviceContext* context, uint32_t width, uint32_t height)
 {
     context->Dispatch((width + 7u) / 8u, (height + 7u) / 8u, 1u);
+}
+
+void dispatchShadowVolume(ID3D11DeviceContext* context)
+{
+    context->Dispatch((kShadowVolumeWidth + 3u) / 4u, (kShadowVolumeHeight + 3u) / 4u, (kShadowVolumeDepth + 3u) / 4u);
 }
 
 } // namespace
@@ -643,6 +704,7 @@ D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const std::filesy
     createFrameResources(d3d, width, height);
     createNubisNoiseTexture(d3d, resolveNubisNoisePath(shaderDir));
     createVolumeSampler(d3d);
+    createShadowVolumeTexture(d3d);
 
     D3D11_BUFFER_DESC constantDesc = {};
     constantDesc.ByteWidth = sizeof(RenderConstants);
@@ -676,6 +738,7 @@ void resize(D3DState& d3d, uint32_t width, uint32_t height)
 
 void checkShaders(const std::filesystem::path& shaderDir)
 {
+    compileShaderBytecode(shaderDir / "updateShadowVolume.hlsl", "updateShadowVolume");
     compileShaderBytecode(shaderDir / "renderVolume.hlsl", "renderVolume");
     compileShaderBytecode(shaderDir / "temporalDenoise.hlsl", "temporalDenoise");
     compileShaderBytecode(shaderDir / "tonemap.hlsl", "tonemap");
@@ -685,6 +748,7 @@ void setVolume(D3DState& d3d, const Volume& volume)
 {
     unbindComputeResources(d3d.context.Get());
     createVolumeBuffers(d3d, volume);
+    clearShadowVolume(d3d);
     d3d.historyIndex = 0;
 }
 
@@ -719,7 +783,6 @@ RenderConstants makeConstants(
     const Vec3 extinction = maxVec3(settings.extinction, 0.0f);
     const Vec3 albedo = saturateVec3(settings.albedo);
     c.absorption = mulVec3(extinction, {1.0f - albedo.x, 1.0f - albedo.y, 1.0f - albedo.z});
-    c.stepJitter = settings.stepJitter;
     c.scattering = mulVec3(extinction, albedo);
     c.exposure = settings.exposure;
     c.volumeWorldMin = volume.worldMin;
@@ -746,6 +809,11 @@ RenderConstants makeConstants(
     c.ambientLightColor = settings.ambientLightColor;
     c.coarseDistanceSafetyMargin = std::max(volume.coarseSignedDistance.safetyMargin, 0.0f);
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
+    c.shadowUpdateFrames = static_cast<uint32_t>(std::clamp(settings.shadowVolumeUpdateFrames, 1, 64));
+    c.shadowUpdateFrame = frameIndex % c.shadowUpdateFrames;
+    c.shadowVolumeStepLength = std::max(settings.shadowVolumeStepLength, 1.0f);
+    c.shadowLocalSampleOffset0 = std::max(settings.shadowLocalSampleOffset0, 0.0f);
+    c.shadowLocalSampleOffset1 = std::max(settings.shadowLocalSampleOffset1, c.shadowLocalSampleOffset0 + 0.001f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));
     c.debugSampleCountScale = std::max(settings.debugSampleCountScale, 1.0f);
@@ -755,7 +823,8 @@ RenderConstants makeConstants(
 
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
-    if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.coarseSignedDistanceSrv || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
+    if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.coarseSignedDistanceSrv || !d3d.shadowVolumeSrv || !d3d.shadowVolumeUav
+        || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
         clearBackbuffer(d3d);
         return;
     }
@@ -763,6 +832,30 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
     d3d.context->UpdateSubresource(d3d.constantsBuffer.Get(), 0, nullptr, &constants, 0, 0);
 
     ID3D11Buffer* cb = d3d.constantsBuffer.Get();
+    d3d.context->CSSetConstantBuffers(0, 1, &cb);
+
+    ID3D11ShaderResourceView* shadowUpdateSrvs[] = {
+        d3d.volumeSrv.Get(),
+        nullptr,
+        nullptr,
+        nullptr,
+        d3d.signedDistanceSrv.Get(),
+        nullptr,
+        nullptr,
+        nullptr,
+    };
+    ID3D11UnorderedAccessView* shadowUpdateUavs[] = {
+        nullptr,
+        nullptr,
+        nullptr,
+        nullptr,
+        d3d.shadowVolumeUav.Get(),
+    };
+    d3d.context->CSSetShader(d3d.shaders.updateShadowVolume.Get(), nullptr, 0);
+    d3d.context->CSSetShaderResources(0, 8, shadowUpdateSrvs);
+    d3d.context->CSSetUnorderedAccessViews(0, 5, shadowUpdateUavs, nullptr);
+    dispatchShadowVolume(d3d.context.Get());
+    unbindComputeResources(d3d.context.Get());
     d3d.context->CSSetConstantBuffers(0, 1, &cb);
 
     ID3D11ShaderResourceView* renderSrvs[] = {
@@ -773,12 +866,13 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         d3d.signedDistanceSrv.Get(),
         d3d.nubisNoiseSrv.Get(),
         d3d.coarseSignedDistanceSrv.Get(),
+        d3d.shadowVolumeSrv.Get(),
     };
-    ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr};
+    ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr, nullptr};
     ID3D11SamplerState* renderSamplers[] = {d3d.volumeSampler.Get()};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 7, renderSrvs);
-    d3d.context->CSSetUnorderedAccessViews(0, 4, renderUavs, nullptr);
+    d3d.context->CSSetShaderResources(0, 8, renderSrvs);
+    d3d.context->CSSetUnorderedAccessViews(0, 5, renderUavs, nullptr);
     d3d.context->CSSetSamplers(0, 1, renderSamplers);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);
     unbindComputeResources(d3d.context.Get());

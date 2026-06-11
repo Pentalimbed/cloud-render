@@ -156,14 +156,19 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     actions.settingsChanged |= ImGui::SliderFloat("Temporal blend", &settings.temporalBlend, 0.0f, 0.98f, "%.2f");
     controlHint("History weight for temporal denoising.");
     if (settings.rendererMode == 0) {
-        actions.settingsChanged |= ImGui::SliderFloat("Step jitter", &settings.stepJitter, 0.0f, 1.0f, "%.2f");
-        controlHint("Randomizes raymarch step positions to reduce banding.");
         actions.settingsChanged |= ImGui::SliderFloat("Primary min step", &settings.raymarchPrimaryMinStep, 0.01f, 10.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         controlHint("Minimum world-space step length for primary ray marching.");
         actions.settingsChanged |= ImGui::SliderFloat("Primary distance scale", &settings.raymarchPrimaryStepScale, 0.0f, 1.0f, "%.3f");
         controlHint("Scales sqrt(distance from camera) for adaptive primary ray steps.");
-        actions.settingsChanged |= ImGui::SliderInt("Shadow ray steps", &settings.raymarchShadowSteps, 4, 256);
-        controlHint("Ray marcher light transmittance steps.");
+        actions.settingsChanged |= ImGui::SliderInt("Shadow update frames", &settings.shadowVolumeUpdateFrames, 1, 32);
+        controlHint("Number of frames used to refresh the coarse shadow summed-density volume.");
+        actions.settingsChanged |= ImGui::SliderFloat("Shadow volume step", &settings.shadowVolumeStepLength, 1.0f, 512.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+        controlHint("World-space step length for the coarse shadow volume update ray march.");
+        actions.settingsChanged |= ImGui::SliderFloat("Shadow local range 0", &settings.shadowLocalSampleOffset0, 0.0f, 256.0f, "%.1f");
+        controlHint("Upper world-space distance for the first jittered local shadow sample interval along the light direction.");
+        actions.settingsChanged |= ImGui::SliderFloat("Shadow local range 1", &settings.shadowLocalSampleOffset1, 0.0f, 512.0f, "%.1f");
+        controlHint("End distance for the second jittered local shadow interval before delegating to the shadow volume.");
+        settings.shadowLocalSampleOffset1 = std::max(settings.shadowLocalSampleOffset1, settings.shadowLocalSampleOffset0 + 0.001f);
     } else {
         actions.settingsChanged |= ImGui::SliderFloat("Majorant", &settings.densityMajorant, 0.05f, 25.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
         controlHint("Scalar null-collision majorant multiplier for the path tracer.");

@@ -37,12 +37,13 @@ struct RenderSettings {
     int debugViewMode = 0;
 #endif
     float densityMultiplier = 100.0f;
-    Vec3 absorption = {0.08f, 0.08f, 0.08f};
-    Vec3 scattering = {0.65f, 0.70f, 0.78f};
+    Vec3 extinction = {0.73f, 0.78f, 0.86f};
+    Vec3 albedo = {0.98f, 0.98f, 0.98f};
     Vec3 lightDirection = {-0.35f, 0.3f, 0.8f};
     Vec3 lightColor = {5.0f, 4.85f, 4.55f};
+    Vec3 ambientLightColor = {0.02f, 0.03f, 0.05f};
     int phaseFunctionMode = 2;
-    float cloudPhaseGhg = 0.15f;
+    float cloudPhaseGhg = 0.6f;
     float cloudPhaseAlpha = 1.0f;
     float particleDiameterMicrons = 20.0f;
     float exposure = 1.0f;
@@ -57,7 +58,7 @@ struct RenderSettings {
     float nubisDetailType = 0.5f;
     float nubisNoiseScale = 178.7f;
     float maxDistanceToZero = 1.0f;
-    float msAttenuationScale = 6.0f;
+    float msAttenuationScale = 1.0f;
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     float debugSampleCountScale = 256.0f;
 #endif
@@ -113,6 +114,9 @@ struct RenderConstants {
     float nubisNoiseScale;
     float maxDistanceToZero;
     float msAttenuationScale;
+
+    Vec3 ambientLightColor;
+    float _ambientLightPad0;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;

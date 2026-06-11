@@ -7,7 +7,8 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build/windows-vs-vcpkg",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+        "CLOUD_RENDER_ENABLE_DEBUG_VIZ": true
       }
     }
   ],

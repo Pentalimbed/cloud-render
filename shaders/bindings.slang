@@ -54,6 +54,9 @@ cbuffer RenderConstants : register(b0)
     float maxDistanceToZero;
     float msAttenuationScale;
 
+    float3 ambientLightColor;
+    float ambientLightPad0;
+
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
     float debugSampleCountScale;

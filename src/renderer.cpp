@@ -64,6 +64,29 @@ CloudPhaseParameters makeCloudPhaseParameters(float diameterMicrons)
     return params;
 }
 
+Vec3 maxVec3(Vec3 value, float minValue)
+{
+    return {
+        std::max(value.x, minValue),
+        std::max(value.y, minValue),
+        std::max(value.z, minValue),
+    };
+}
+
+Vec3 saturateVec3(Vec3 value)
+{
+    return {
+        std::clamp(value.x, 0.0f, 1.0f),
+        std::clamp(value.y, 0.0f, 1.0f),
+        std::clamp(value.z, 0.0f, 1.0f),
+    };
+}
+
+Vec3 mulVec3(Vec3 a, Vec3 b)
+{
+    return {a.x * b.x, a.y * b.y, a.z * b.z};
+}
+
 void createTexture(
     ID3D11Device* device,
     uint32_t width,
@@ -651,9 +674,11 @@ RenderConstants makeConstants(
     c.lightDirection = normalize(settings.lightDirection);
     c.densityMultiplier = settings.densityMultiplier;
     c.lightColor = settings.lightColor;
-    c.absorption = settings.absorption;
+    const Vec3 extinction = maxVec3(settings.extinction, 0.0f);
+    const Vec3 albedo = saturateVec3(settings.albedo);
+    c.absorption = mulVec3(extinction, {1.0f - albedo.x, 1.0f - albedo.y, 1.0f - albedo.z});
     c.stepJitter = settings.stepJitter;
-    c.scattering = settings.scattering;
+    c.scattering = mulVec3(extinction, albedo);
     c.exposure = settings.exposure;
     c.volumeWorldMin = volume.worldMin;
     c.raymarchPrimaryMinStep = std::max(settings.raymarchPrimaryMinStep, 0.001f);
@@ -676,6 +701,7 @@ RenderConstants makeConstants(
     c.nubisNoiseScale = std::max(settings.nubisNoiseScale, 1.0e-3f);
     c.maxDistanceToZero = std::max(settings.maxDistanceToZero, 1.0e-4f);
     c.msAttenuationScale = std::max(settings.msAttenuationScale, 0.0f);
+    c.ambientLightColor = settings.ambientLightColor;
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     c.debugViewMode = static_cast<uint32_t>(std::clamp(settings.debugViewMode, 0, 2));

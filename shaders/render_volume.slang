@@ -409,8 +409,10 @@ float3 renderRaymarchSample(
             float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, raymarchShadowSteps, rng);
             float phaseCosine = dot(lightDirection, rayDirection);
             float phase = evalPhase(phaseCosine);
-            float3 scatterBase = throughput * lightColor * scattering * sample.density * dt;
-            radiance += scatterBase * (lightTr * phase + estimateEmpiricalMultiScatterFactor(lightTr, sample.density, sample.boundaryDepth, sample.dimensionalProfile, phaseCosine));
+            float3 scatterBase = throughput * scattering * sample.density * dt;
+            float ambientScatter = pow(saturate(1.0f - sample.dimensionalProfile), 0.5f);
+            float3 directLight = lightColor * (lightTr * phase + estimateEmpiricalMultiScatterFactor(lightTr, sample.density, sample.boundaryDepth, sample.dimensionalProfile, phaseCosine));
+            radiance += scatterBase * (ambientLightColor * ambientScatter + directLight);
             throughput *= transmittanceFromOpticalDepth(sigmaT * sample.density * dt);
             if (max3(throughput) < 0.003f) {
                 break;

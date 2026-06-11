@@ -1,5 +1,7 @@
 #include "ui.hpp"
 
+#include <algorithm>
+
 #include <imgui.h>
 
 namespace cloud_render {
@@ -12,6 +14,22 @@ bool controlVec3Color(const char* label, Vec3& value)
     if (changed) {
         value = {color[0], color[1], color[2]};
     }
+    return changed;
+}
+
+bool controlVec3Albedo(const char* label, Vec3& value)
+{
+    float color[3] = {
+        std::clamp(value.x, 0.0f, 1.0f),
+        std::clamp(value.y, 0.0f, 1.0f),
+        std::clamp(value.z, 0.0f, 1.0f),
+    };
+    const bool changed = ImGui::ColorEdit3(label, color, ImGuiColorEditFlags_Float);
+    value = {
+        std::clamp(color[0], 0.0f, 1.0f),
+        std::clamp(color[1], 0.0f, 1.0f),
+        std::clamp(color[2], 0.0f, 1.0f),
+    };
     return changed;
 }
 
@@ -100,10 +118,10 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     controlHint("Scales the world-space frequency of the Nubis detail noise; larger values make broader features.");
     actions.settingsChanged |= ImGui::SliderFloat("Max distance to zero", &settings.maxDistanceToZero, 0.001f, 1000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     controlHint("Normalizes the signed-distance profile used for the dimension profile lookup.");
-    actions.settingsChanged |= controlVec3Color("Absorption", settings.absorption);
-    controlHint("Per-channel extinction that removes light in the medium.");
-    actions.settingsChanged |= controlVec3Color("Scattering", settings.scattering);
-    controlHint("Per-channel scattering coefficient for in-scattered light.");
+    actions.settingsChanged |= controlVec3Color("Extinction", settings.extinction);
+    controlHint("Per-channel extinction coefficient; absorption and scattering are derived from this and Albedo.");
+    actions.settingsChanged |= controlVec3Albedo("Albedo", settings.albedo);
+    controlHint("Single-scattering albedo. Scattering is extinction times albedo; absorption is extinction times one minus albedo.");
     actions.settingsChanged |= ImGui::SliderFloat("MS attenuation scale", &settings.msAttenuationScale, 0.0f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     controlHint("Scales the added empirical multiple-scattering attenuation contribution.");
     actions.settingsChanged |= controlVec3Drag("Light direction", settings.lightDirection, 0.01f, -1.0f, 1.0f);
@@ -111,6 +129,8 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     settings.lightDirection = normalize(settings.lightDirection);
     actions.settingsChanged |= controlVec3Color("Light color", settings.lightColor);
     controlHint("HDR directional light radiance.");
+    actions.settingsChanged |= controlVec3Color("Ambient light", settings.ambientLightColor);
+    controlHint("HDR ambient light color used by the dimensional-profile ambient scatter term.");
     const char* phaseModes[] = {"Henyey-Greenstein", "Draine", "Jendersie Mie"};
     actions.settingsChanged |= ImGui::Combo("Phase", &settings.phaseFunctionMode, phaseModes, 3);
     controlHint("Controls angular scattering distribution used by lighting and path scattering.");

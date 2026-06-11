@@ -332,12 +332,12 @@ float sampleCoarseSignedDistance(float3 worldPosition)
     return gCoarseSignedDistance.Load(int4(coord, 0));
 }
 
-float acceleratedPrimaryRayStepLength(float3 worldPosition)
+float densityGridCellWorldSize(pnanovdb_grid_handle_t grid)
 {
-    float baseStep = primaryRayStepLength(worldPosition);
-    float coarseDistance = sampleCoarseSignedDistance(worldPosition);
-    float outsideStep = max(coarseDistance - max(coarseDistanceSafetyMargin, 0.0f), 0.0f);
-    return max(baseStep, outsideStep);
+    float3 dx = pnanovdb_grid_index_to_world_dirf(gNanoVdb, grid, float3(1.0f, 0.0f, 0.0f));
+    float3 dy = pnanovdb_grid_index_to_world_dirf(gNanoVdb, grid, float3(0.0f, 1.0f, 0.0f));
+    float3 dz = pnanovdb_grid_index_to_world_dirf(gNanoVdb, grid, float3(0.0f, 0.0f, 1.0f));
+    return max(max(max(length(dx), length(dy)), length(dz)), 0.001f);
 }
 
 float sampleShadowSummedDensity(float3 worldPosition)
@@ -483,28 +483,35 @@ float3 renderRaymarchSample(
     pnanovdb_readaccessor_init(densityAccessor, root);
     pnanovdb_readaccessor_t distanceAccessor;
     pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+    float densityCellSize = densityGridCellWorldSize(grid);
 
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
         float3 position = rayOrigin + rayDirection * t;
-        float dt = min(acceleratedPrimaryRayStepLength(position), t1 - t);
+        float signedDistance = sampleCoarseSignedDistance(position);
+        float sdfDist = max(signedDistance - densityCellSize, 0.0f);
+        bool skipLighting = signedDistance > densityCellSize;
+        float adaptiveStep = primaryRayStepLength(position);
+        float dt = min(max(sdfDist, adaptiveStep), t1 - t);
         if (dt <= 0.0f) {
             break;
         }
 
-        VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
-        if (sample.density > 0.0f) {
-            float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
-            float3 lightTr = estimateCachedLightTransmittance(position, grid, root, distanceGrid, distanceRoot, rng);
-            float phaseCosine = dot(lightDirection, rayDirection);
-            float phase = evalPhase(phaseCosine);
-            float3 scatterBase = throughput * scattering * sample.density * dt;
-            float ambientScatter = pow(saturate(1.0f - sample.dimensionalProfile), 0.5f);
-            float3 directLight = lightColor * (lightTr * phase + estimateEmpiricalMultiScatterFactor(lightTr, sample.density, sample.boundaryDepth, sample.dimensionalProfile, phaseCosine));
-            radiance += scatterBase * (ambientLightColor * ambientScatter + directLight);
-            throughput *= transmittanceFromOpticalDepth(sigmaT * sample.density * dt);
-            if (max3(throughput) < 0.003f) {
-                break;
+        if (!skipLighting) {
+            VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng);
+            if (sample.density > 0.0f) {
+                float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
+                float3 lightTr = estimateCachedLightTransmittance(position, grid, root, distanceGrid, distanceRoot, rng);
+                float phaseCosine = dot(lightDirection, rayDirection);
+                float phase = evalPhase(phaseCosine);
+                float3 scatterBase = throughput * scattering * sample.density * dt;
+                float ambientScatter = pow(saturate(1.0f - sample.dimensionalProfile), 0.5f);
+                float3 directLight = lightColor * (lightTr * phase + estimateEmpiricalMultiScatterFactor(lightTr, sample.density, sample.boundaryDepth, sample.dimensionalProfile, phaseCosine));
+                radiance += scatterBase * (ambientLightColor * ambientScatter + directLight);
+                throughput *= transmittanceFromOpticalDepth(sigmaT * sample.density * dt);
+                if (max3(throughput) < 0.003f) {
+                    break;
+                }
             }
         }
         t += dt;

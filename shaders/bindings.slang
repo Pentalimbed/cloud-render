@@ -55,7 +55,7 @@ cbuffer RenderConstants : register(b0)
     float msAttenuationScale;
 
     float3 ambientLightColor;
-    float coarseDistanceSafetyMargin;
+    float ambientPad;
 
     uint shadowUpdateFrame;
     uint shadowUpdateFrames;

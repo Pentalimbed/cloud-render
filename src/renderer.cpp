@@ -807,7 +807,6 @@ RenderConstants makeConstants(
     c.maxDistanceToZero = std::max(settings.maxDistanceToZero, 1.0e-4f);
     c.msAttenuationScale = std::max(settings.msAttenuationScale, 0.0f);
     c.ambientLightColor = settings.ambientLightColor;
-    c.coarseDistanceSafetyMargin = std::max(volume.coarseSignedDistance.safetyMargin, 0.0f);
     c.raymarchPrimaryStepScale = std::max(settings.raymarchPrimaryStepScale, 0.0f);
     c.shadowUpdateFrames = static_cast<uint32_t>(std::clamp(settings.shadowVolumeUpdateFrames, 1, 64));
     c.shadowUpdateFrame = frameIndex % c.shadowUpdateFrames;

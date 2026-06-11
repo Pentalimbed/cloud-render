@@ -119,7 +119,7 @@ struct RenderConstants {
     float msAttenuationScale;
 
     Vec3 ambientLightColor;
-    float coarseDistanceSafetyMargin;
+    float _ambientPad0;
 
     uint32_t shadowUpdateFrame;
     uint32_t shadowUpdateFrames;

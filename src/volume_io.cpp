@@ -321,13 +321,6 @@ CoarseSignedDistanceVolume createCoarseSignedDistanceVolume(
         std::numeric_limits<float>::infinity());
 
     const Vec3 extent = worldMax - worldMin;
-    const Vec3 cellExtent = {
-        extent.x / static_cast<float>(std::max(result.size[0], 1u)),
-        extent.y / static_cast<float>(std::max(result.size[1], 1u)),
-        extent.z / static_cast<float>(std::max(result.size[2], 1u)),
-    };
-    result.safetyMargin = length(cellExtent);
-
     openvdb::FloatGrid::ConstAccessor sdfAccessor = signedDistanceGrid.getConstAccessor();
     const DenseBounds sourceBounds = makeDenseBounds(activeBBox);
     for (uint32_t z = 0; z < sourceBounds.size[2]; ++z) {

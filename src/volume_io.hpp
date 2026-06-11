@@ -15,7 +15,6 @@ namespace cloud_render {
 struct CoarseSignedDistanceVolume {
     std::array<uint32_t, 3> size = {};
     std::vector<float> values;
-    float safetyMargin = 0.0f;
 };
 
 struct Volume {

@@ -178,7 +178,8 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11UnorderedAccessView> shadowVolumeUav;
     Microsoft::WRL::ComPtr<ID3D11Texture3D> nubisNoiseTexture;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> nubisNoiseSrv;
-    Microsoft::WRL::ComPtr<ID3D11SamplerState> volumeSampler;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> wrapSampler;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> clampSampler;
 
     Shaders shaders;
     uint32_t width = 0;

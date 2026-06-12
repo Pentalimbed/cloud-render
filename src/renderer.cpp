@@ -332,7 +332,7 @@ void createNubisNoiseTexture(D3DState& d3d, const std::filesystem::path& path)
         "CreateShaderResourceView failed for " + path.string());
 }
 
-void createVolumeSampler(D3DState& d3d)
+void createWrapSampler(D3DState& d3d)
 {
     D3D11_SAMPLER_DESC desc = {};
     desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -342,7 +342,20 @@ void createVolumeSampler(D3DState& d3d)
     desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
     desc.MinLOD = 0.0f;
     desc.MaxLOD = D3D11_FLOAT32_MAX;
-    throwIfFailed(d3d.device->CreateSamplerState(&desc, d3d.volumeSampler.GetAddressOf()), "CreateSamplerState failed");
+    throwIfFailed(d3d.device->CreateSamplerState(&desc, d3d.wrapSampler.GetAddressOf()), "CreateSamplerState failed");
+}
+
+void createClampSampler(D3DState& d3d)
+{
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
+    desc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
+    desc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MinLOD = 0.0f;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    throwIfFailed(d3d.device->CreateSamplerState(&desc, d3d.clampSampler.GetAddressOf()), "CreateSamplerState failed");
 }
 
 void createNanoVdbBuffer(
@@ -496,7 +509,7 @@ void unbindComputeResources(ID3D11DeviceContext* context)
 {
     std::array<ID3D11ShaderResourceView*, 8> nullSrvs = {};
     std::array<ID3D11UnorderedAccessView*, 5> nullUavs = {};
-    std::array<ID3D11SamplerState*, 1> nullSamplers = {};
+    std::array<ID3D11SamplerState*, 2> nullSamplers = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
     context->CSSetUnorderedAccessViews(0, static_cast<UINT>(nullUavs.size()), nullUavs.data(), nullptr);
     context->CSSetSamplers(0, static_cast<UINT>(nullSamplers.size()), nullSamplers.data());
@@ -703,7 +716,8 @@ D3DState createD3D(HWND hwnd, uint32_t width, uint32_t height, const std::filesy
     createBackbufferTargets(d3d);
     createFrameResources(d3d, width, height);
     createNubisNoiseTexture(d3d, resolveNubisNoisePath(shaderDir));
-    createVolumeSampler(d3d);
+    createWrapSampler(d3d);
+    createClampSampler(d3d);
     createShadowVolumeTexture(d3d);
 
     D3D11_BUFFER_DESC constantDesc = {};
@@ -823,7 +837,7 @@ RenderConstants makeConstants(
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
     if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.coarseSignedDistanceSrv || !d3d.shadowVolumeSrv || !d3d.shadowVolumeUav
-        || !d3d.nubisNoiseSrv || !d3d.volumeSampler) {
+        || !d3d.nubisNoiseSrv || !d3d.wrapSampler || !d3d.clampSampler) {
         clearBackbuffer(d3d);
         return;
     }
@@ -868,11 +882,11 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         d3d.shadowVolumeSrv.Get(),
     };
     ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr, nullptr};
-    ID3D11SamplerState* renderSamplers[] = {d3d.volumeSampler.Get()};
+    ID3D11SamplerState* renderSamplers[] = {d3d.wrapSampler.Get(), d3d.clampSampler.Get()};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
     d3d.context->CSSetShaderResources(0, 8, renderSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 5, renderUavs, nullptr);
-    d3d.context->CSSetSamplers(0, 1, renderSamplers);
+    d3d.context->CSSetSamplers(0, 2, renderSamplers);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);
     unbindComputeResources(d3d.context.Get());
 

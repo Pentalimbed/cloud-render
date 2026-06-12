@@ -183,7 +183,7 @@ float getUprezzedVoxelCloudDensity(float rayDistance, float3 samplePosition, flo
 {
     float mipmapLevel = getVoxelCloudMipLevel(rayDistance);
     float noiseScale = max(nubisNoiseScale, 1.0e-3f);
-    float4 noise = gNubisNoise.SampleLevel(gVolumeSampler, samplePosition / noiseScale, mipmapLevel);
+    float4 noise = gNubisNoise.SampleLevel(gWrapSampler, samplePosition / noiseScale, mipmapLevel);
 
     float wispyNoise = lerp(noise.r, noise.g, dimensionalProfile);
     float billowyTypeGradient = pow(max(dimensionalProfile, 0.0f), 0.25f);
@@ -334,9 +334,16 @@ float sampleShadowSummedDensity(float3 worldPosition)
     float3 extent = max(volumeWorldMax - volumeWorldMin, float3(1.0e-6f, 1.0e-6f, 1.0e-6f));
     float3 uvw = (worldPosition - volumeWorldMin) / extent;
     if (any(uvw < float3(0.0f, 0.0f, 0.0f)) || any(uvw > float3(1.0f, 1.0f, 1.0f))) {
-        return 0.0f;
+        float tmin;
+        float tmax;
+        if (!clipIndexBounds(worldPosition, lightDirection, volumeWorldMin, volumeWorldMax, tmin, tmax)) {
+            return 0.0f;
+        }
+
+        worldPosition += lightDirection * max(tmin, 0.0f);
+        uvw = (worldPosition - volumeWorldMin) / extent;
     }
-    return max(0.0f, gShadowSummedDensity.SampleLevel(gVolumeSampler, uvw, 0.0f));
+    return max(0.0f, gShadowSummedDensity.SampleLevel(gClampSampler, saturate(uvw), 0.0f));
 }
 
 float3 estimateCachedLightTransmittance(

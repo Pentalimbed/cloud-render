@@ -88,7 +88,8 @@ Texture3D<float4> gNubisNoise : register(t5);
 Texture3D<float> gCoarseSignedDistance : register(t6);
 Texture3D<float> gShadowSummedDensity : register(t7);
 
-SamplerState gVolumeSampler : register(s0);
+SamplerState gWrapSampler : register(s0);
+SamplerState gClampSampler : register(s1);
 
 RWTexture2D<float4> gRenderOut : register(u0);
 RWTexture2D<float4> gDenoisedOut : register(u1);

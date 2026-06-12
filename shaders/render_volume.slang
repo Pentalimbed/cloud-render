@@ -483,18 +483,15 @@ float3 renderRaymarchSample(
 
     [loop]
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
-        float3 position = rayOrigin + rayDirection * t;
-        float signedDistance = sampleCoarseSignedDistance(position);
-        float sdfDist = max(signedDistance - densityCellSize, 0.0f);
-        bool skipLighting = signedDistance > densityCellSize;
-        float adaptiveStep = primaryRayStepLength(position);
-        float dt = min(max(sdfDist, adaptiveStep), t1 - t);
-        if (dt <= 0.0f) {
-            break;
-        }
+        float3 position       = rayOrigin + rayDirection * t;
+        float  signedDistance = sampleCoarseSignedDistance(position);
+        float  sdfDist        = max(signedDistance - densityCellSize * 0.5, 0.0f);
+        bool   skipLighting   = signedDistance > densityCellSize * 0.5;
+        float  adaptiveStep   = primaryRayStepLength(position);
+        float  dt             = min(max(sdfDist, adaptiveStep), t1 - t);
 
         if (!skipLighting) {
-            float sampleT = min(t + dt * rand01(rng), t1);
+            float sampleT = t + dt * rand01(rng);
             float3 samplePosition = rayOrigin + rayDirection * sampleT;
             VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, true);
             if (sample.density > 0.0f) {

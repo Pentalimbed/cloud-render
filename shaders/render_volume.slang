@@ -354,12 +354,12 @@ float3 estimateCachedLightTransmittance(
     pnanovdb_root_handle_t distanceRoot,
     inout uint rng)
 {
-    float firstLimit = max(shadowLocalSampleOffset0, 0.0f);
-    float secondLimit = max(shadowLocalSampleOffset1, firstLimit + 0.001f);
-    float firstSegment = firstLimit;
+    float firstLimit    = max(shadowLocalSampleOffset0, 0.0f);
+    float secondLimit   = max(shadowLocalSampleOffset1, firstLimit + 0.001f);
+    float firstSegment  = firstLimit;
     float secondSegment = max(secondLimit - firstLimit, 0.001f);
-    float firstOffset = rand01(rng) * firstSegment;
-    float secondOffset = firstLimit + rand01(rng) * secondSegment;
+    float firstOffset   = rand01(rng) * firstSegment;
+    float secondOffset  = firstLimit + rand01(rng) * secondSegment;
 
     pnanovdb_readaccessor_t densityAccessor;
     pnanovdb_readaccessor_init(densityAccessor, root);
@@ -374,7 +374,7 @@ float3 estimateCachedLightTransmittance(
     float summedDensity = s0.density * firstSegment + s1.density * secondSegment;
     summedDensity += sampleShadowSummedDensity(worldPosition + lightDirection * secondLimit);
 
-    return transmittanceFromOpticalDepth(max(absorption + scattering, float3(0.0f, 0.0f, 0.0f)) * summedDensity);
+    return transmittanceFromOpticalDepth((absorption + scattering) * summedDensity);
 }
 
 float3 estimateLightTransmittance(

@@ -43,20 +43,6 @@ float3 transmittanceFromOpticalDepth(float3 opticalDepth)
     return exp(-min(opticalDepth, float3(80.0f, 80.0f, 80.0f)));
 }
 
-pnanovdb_grid_handle_t firstDensityGrid()
-{
-    pnanovdb_grid_handle_t grid;
-    grid.address = pnanovdb_address_null();
-    return grid;
-}
-
-pnanovdb_grid_handle_t firstDistanceGrid()
-{
-    pnanovdb_grid_handle_t grid;
-    grid.address = pnanovdb_address_null();
-    return grid;
-}
-
 pnanovdb_root_handle_t gridRoot(pnanovdb_grid_handle_t grid)
 {
     pnanovdb_tree_handle_t tree = pnanovdb_grid_get_tree(gNanoVdb, grid);
@@ -105,18 +91,44 @@ float readDensityAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
     return max(0.0f, pnanovdb_read_float(gNanoVdb, address));
 }
 
-int3 stochasticLinearIndex(float3 indexPosition, inout uint rng)
+int stochasticCubicOffset(float t, inout uint rng)
+{
+    float t2 = t * t;
+    float t3 = t2 * t;
+    float w0 = (1.0f - 3.0f * t + 3.0f * t2 - t3) * (1.0f / 6.0f);
+    float w1 = (4.0f - 6.0f * t2 + 3.0f * t3) * (1.0f / 6.0f);
+    float w2 = (1.0f + 3.0f * t + 3.0f * t2 - 3.0f * t3) * (1.0f / 6.0f);
+
+    float xi = rand01(rng);
+    if (xi < w0) {
+        return -1;
+    }
+
+    xi -= w0;
+    if (xi < w1) {
+        return 0;
+    }
+
+    xi -= w1;
+    if (xi < w2) {
+        return 1;
+    }
+
+    return 2;
+}
+
+int3 stochasticCubicIndex(float3 indexPosition, inout uint rng)
 {
     float3 basef = floor(indexPosition);
     float3 frac = saturate(indexPosition - basef);
     int3 base = int3(basef);
 
-    int3 corner = int3(
-        rand01(rng) < frac.x ? 1 : 0,
-        rand01(rng) < frac.y ? 1 : 0,
-        rand01(rng) < frac.z ? 1 : 0);
+    int3 offset = int3(
+        stochasticCubicOffset(frac.x, rng),
+        stochasticCubicOffset(frac.y, rng),
+        stochasticCubicOffset(frac.z, rng));
 
-    return base + corner;
+    return base + offset;
 }
 
 float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor)
@@ -251,7 +263,7 @@ VolumeDensitySample sampleDensityWorld(
     bool                          useHighFrequencyDetails)
 {
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
-    int3 sampleIndex = stochasticLinearIndex(indexPosition, rng);
+    int3 sampleIndex = stochasticCubicIndex(indexPosition, rng);
     return sampleDensityWorldAtIndex(worldPosition, rayDistance, sampleIndex, densityAccessor, distanceAccessor, useHighFrequencyDetails);
 }
 
@@ -485,8 +497,8 @@ float3 renderRaymarchSample(
     for (uint i = 0u; i < 65535u && t < t1; ++i) {
         float3 position       = rayOrigin + rayDirection * t;
         float  signedDistance = sampleCoarseSignedDistance(position);
-        float  sdfDist        = max(signedDistance - densityCellSize * 0.5, 0.0f);
-        bool   skipLighting   = signedDistance > densityCellSize * 0.5;
+        float  sdfDist        = max(signedDistance - densityCellSize, 0.1f);
+        bool   skipLighting   = signedDistance > densityCellSize;
         float  adaptiveStep   = primaryRayStepLength(position);
         float  dt             = min(max(sdfDist, adaptiveStep), t1 - t);
 
@@ -674,9 +686,10 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     uint2 pixel = dispatchThreadId.xy;
     uint seed = hashUint(pixel.x + pixel.y * imageWidth + frameIndex * 9781u + 0x9e3779b9u);
-    pnanovdb_grid_handle_t grid = firstDensityGrid();
+    pnanovdb_grid_handle_t grid;
+    pnanovdb_grid_handle_t distanceGrid;
+    grid.address = distanceGrid.address = pnanovdb_address_null();
     pnanovdb_root_handle_t root = gridRoot(grid);
-    pnanovdb_grid_handle_t distanceGrid = firstDistanceGrid();
     pnanovdb_root_handle_t distanceRoot = distanceGridRoot(distanceGrid);
 
     float3 rayDirection = makeCameraRay(pixel, seed);

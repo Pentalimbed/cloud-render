@@ -84,6 +84,16 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
         controlHint("Maximum active voxel density in the loaded volume before the UI Density multiplier.");
         ImGui::Text("Max distance to zero %.6g", volume->maxDistanceToZero);
         controlHint("Maximum signed-distance magnitude stored in the generated companion volume.");
+        if (volume->hasQCriterion) {
+            ImGui::Text(
+                "q_criterion %.6g to %.6g",
+                volume->qCriterionMin,
+                volume->qCriterionMax);
+            controlHint("Loaded local detail-classification field. Negative values map wispy; positive values map billowy.");
+        } else {
+            ImGui::TextUnformatted("q_criterion not loaded");
+            controlHint("Without q_criterion, the global Nubis detail type slider controls all samples.");
+        }
         ImGui::Text(
             "Coarse SDF %ux%ux%u",
             volume->coarseSignedDistance.size[0],
@@ -119,7 +129,17 @@ UiActions buildUi(RenderSettings& settings, const Volume* volume, VolumeUiState&
     actions.settingsChanged |= ImGui::SliderFloat("Density", &settings.densityMultiplier, 0.0f, 500.0f, "%.3f");
     controlHint("Scales sampled VDB density before absorption and scattering.");
     actions.settingsChanged |= ImGui::SliderFloat("Nubis detail type", &settings.nubisDetailType, 0.0f, 1.0f, "%.2f");
-    controlHint("Blends the Nubis up-res noise from wispy details at 0 to billowy details at 1.");
+    controlHint("Fallback blend from wispy details at 0 to billowy details at 1 when no q_criterion field is loaded.");
+    if (volume && volume->hasQCriterion) {
+        const float qEditExtent = std::max(volume->qCriterionAbsMax * 4.0f, 1.0e-4f);
+        actions.settingsChanged |= ImGui::DragFloat("q clip min", &settings.qCriterionClipMin, qEditExtent * 0.001f, -qEditExtent, qEditExtent, "%.6f");
+        controlHint("q_criterion value mapped to fully wispy detail.");
+        actions.settingsChanged |= ImGui::DragFloat("q clip max", &settings.qCriterionClipMax, qEditExtent * 0.001f, -qEditExtent, qEditExtent, "%.6f");
+        controlHint("q_criterion value mapped to fully billowy detail.");
+        settings.qCriterionClipMax = std::max(settings.qCriterionClipMax, settings.qCriterionClipMin + 1.0e-6f);
+        actions.settingsChanged |= ImGui::SliderFloat("q detail bias", &settings.qCriterionBias, -1.0f, 1.0f, "%.2f");
+        controlHint("Bends the q_criterion mapping toward wispy at negative values or billowy at positive values while preserving the range endpoints.");
+    }
     actions.settingsChanged |= ImGui::SliderFloat("Noise scale", &settings.nubisNoiseScale, 1.0f, 2000.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
     controlHint("Scales the world-space frequency of the Nubis detail noise; larger values make broader features.");
     actions.settingsChanged |= ImGui::SliderFloat("Max distance to zero", &settings.maxDistanceToZero, 0.001f, 1000.0f, "%.1f");

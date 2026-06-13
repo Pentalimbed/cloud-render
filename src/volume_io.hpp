@@ -19,6 +19,7 @@ struct CoarseSignedDistanceVolume {
 
 struct Volume {
     nanovdb::GridHandle<nanovdb::HostBuffer> handle;
+    nanovdb::GridHandle<nanovdb::HostBuffer> qCriterionHandle;
     nanovdb::GridHandle<nanovdb::HostBuffer> signedDistanceHandle;
     CoarseSignedDistanceVolume coarseSignedDistance;
     Vec3 nativeWorldMin = {0.0f, 0.0f, 0.0f};
@@ -27,8 +28,13 @@ struct Volume {
     Vec3 worldMax = {0.0f, 0.0f, 0.0f};
     float maxDensity = 0.0f;
     float maxDistanceToZero = 0.0f;
+    float qCriterionMin = 0.0f;
+    float qCriterionMax = 0.0f;
+    float qCriterionAbsMax = 0.0f;
     int nativeUpAxis = 2;
+    bool hasQCriterion = false;
     std::string gridName;
+    std::string qCriterionGridName;
 };
 
 Volume loadVolume(const std::filesystem::path& path);

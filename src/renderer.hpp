@@ -59,6 +59,9 @@ struct RenderSettings {
     float shadowLocalSampleOffset1 = 64.0f;
     int pathMaxBounces = 8;
     float nubisDetailType = 0.5f;
+    float qCriterionClipMin = -1.0f;
+    float qCriterionClipMax = 1.0f;
+    float qCriterionBias = 0.0f;
     float nubisNoiseScale = 178.7f;
     float maxDistanceToZero = 1.0f;
     float msAttenuationScale = 1.0f;
@@ -114,12 +117,12 @@ struct RenderConstants {
     float cloudPhaseWeight;
 
     float nubisDetailType;
-    float nubisNoiseScale;
-    float maxDistanceToZero;
-    float msAttenuationScale;
+    float qCriterionClipMin;
+    float qCriterionClipMax;
+    float qCriterionBias;
 
     Vec3 ambientLightColor;
-    float _ambientPad0;
+    uint32_t hasQCriterion;
 
     uint32_t shadowUpdateFrame;
     uint32_t shadowUpdateFrames;
@@ -127,9 +130,9 @@ struct RenderConstants {
     float shadowLocalSampleOffset0;
 
     float shadowLocalSampleOffset1;
-    float _shadowPad0;
-    float _shadowPad1;
-    float _shadowPad2;
+    float maxDistanceToZero;
+    float msAttenuationScale;
+    float nubisNoiseScale;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint32_t debugViewMode;
@@ -169,6 +172,8 @@ struct D3DState {
     Microsoft::WRL::ComPtr<ID3D11Buffer> constantsBuffer;
     Microsoft::WRL::ComPtr<ID3D11Buffer> volumeBuffer;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> volumeSrv;
+    Microsoft::WRL::ComPtr<ID3D11Buffer> qCriterionBuffer;
+    Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> qCriterionSrv;
     Microsoft::WRL::ComPtr<ID3D11Buffer> signedDistanceBuffer;
     Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> signedDistanceSrv;
     Microsoft::WRL::ComPtr<ID3D11Texture3D> coarseSignedDistanceTexture;

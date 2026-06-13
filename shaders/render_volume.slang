@@ -55,6 +55,12 @@ pnanovdb_root_handle_t distanceGridRoot(pnanovdb_grid_handle_t grid)
     return pnanovdb_tree_get_root(gDistanceNanoVdb, tree);
 }
 
+pnanovdb_root_handle_t qCriterionGridRoot(pnanovdb_grid_handle_t grid)
+{
+    pnanovdb_tree_handle_t tree = pnanovdb_grid_get_tree(gQCriterionNanoVdb, grid);
+    return pnanovdb_tree_get_root(gQCriterionNanoVdb, tree);
+}
+
 bool clipIndexBounds(float3 origin, float3 direction, float3 bmin, float3 bmax, out float tmin, out float tmax)
 {
     float3 fallback = sign(direction) * float3(1.0e-8f, 1.0e-8f, 1.0e-8f) + float3(1.0e-8f, 1.0e-8f, 1.0e-8f);
@@ -136,6 +142,34 @@ float readSignedDistanceAtCoord(int3 ijk, inout pnanovdb_readaccessor_t accessor
     pnanovdb_coord_t coord = ijk;
     pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gDistanceNanoVdb, accessor, coord);
     return pnanovdb_read_float(gDistanceNanoVdb, address);
+}
+
+float remapQCriterionToDetailType(float qCriterion)
+{
+    float clipMin = min(qCriterionClipMin, qCriterionClipMax - 1.0e-6f);
+    float clipMax = max(qCriterionClipMax, clipMin + 1.0e-6f);
+    float detailType = saturate((qCriterion - clipMin) / (clipMax - clipMin));
+    float exponent = exp2(-qCriterionBias * 4.0f);
+    return pow(detailType, exponent);
+}
+
+float detailTypeAtCoord(int3 ijk, float baseDensity, inout pnanovdb_readaccessor_t qCriterionAccessor)
+{
+    if (baseDensity <= 0.0f) {
+        return 0.0f;
+    }
+    if (hasQCriterion == 0u) {
+        return saturate(nubisDetailType);
+    }
+
+    pnanovdb_coord_t coord = ijk;
+    if (!pnanovdb_readaccessor_is_active(PNANOVDB_GRID_TYPE_FLOAT, gQCriterionNanoVdb, qCriterionAccessor, coord)) {
+        return 0.0f;
+    }
+
+    pnanovdb_address_t address = pnanovdb_readaccessor_get_value_address(PNANOVDB_GRID_TYPE_FLOAT, gQCriterionNanoVdb, qCriterionAccessor, coord);
+    float qCriterion = pnanovdb_read_float(gQCriterionNanoVdb, address);
+    return remapQCriterionToDetailType(qCriterion);
 }
 
 int3 nearestIndex(float3 indexPosition)
@@ -227,6 +261,7 @@ VolumeDensitySample sampleDensityWorldAtIndex(
     int3                          sampleIndex,
     inout pnanovdb_readaccessor_t densityAccessor,
     inout pnanovdb_readaccessor_t distanceAccessor,
+    inout pnanovdb_readaccessor_t qCriterionAccessor,
     bool                          useHighFrequencyDetails)
 {
     VolumeDensitySample sample;
@@ -246,7 +281,8 @@ VolumeDensitySample sampleDensityWorldAtIndex(
         return sample;
     }
 
-    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, sample.dimensionalProfile, nubisDetailType, useHighFrequencyDetails);
+    float detailType = detailTypeAtCoord(sampleIndex, baseDensity, qCriterionAccessor);
+    float detailDensity = getUprezzedVoxelCloudDensity(rayDistance, worldPosition, sample.dimensionalProfile, detailType, useHighFrequencyDetails);
     detailDensity *= valueRemap(rayDistance, 10.0f, 120.0f, 0.25f, 1.0f);
     sample.density = baseDensity * detailDensity * densityMultiplier;
     return sample;
@@ -259,12 +295,13 @@ VolumeDensitySample sampleDensityWorld(
     inout pnanovdb_readaccessor_t densityAccessor,
     pnanovdb_grid_handle_t        distanceGrid,
     inout pnanovdb_readaccessor_t distanceAccessor,
+    inout pnanovdb_readaccessor_t qCriterionAccessor,
     inout uint                    rng,
     bool                          useHighFrequencyDetails)
 {
     float3 indexPosition = pnanovdb_grid_world_to_indexf(gNanoVdb, grid, worldPosition);
     int3 sampleIndex = stochasticCubicIndex(indexPosition, rng);
-    return sampleDensityWorldAtIndex(worldPosition, rayDistance, sampleIndex, densityAccessor, distanceAccessor, useHighFrequencyDetails);
+    return sampleDensityWorldAtIndex(worldPosition, rayDistance, sampleIndex, densityAccessor, distanceAccessor, qCriterionAccessor, useHighFrequencyDetails);
 }
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -364,6 +401,7 @@ float3 estimateCachedLightTransmittance(
     pnanovdb_root_handle_t root,
     pnanovdb_grid_handle_t distanceGrid,
     pnanovdb_root_handle_t distanceRoot,
+    pnanovdb_root_handle_t qCriterionRoot,
     inout uint rng)
 {
     float firstLimit    = max(shadowLocalSampleOffset0, 0.0f);
@@ -377,11 +415,13 @@ float3 estimateCachedLightTransmittance(
     pnanovdb_readaccessor_init(densityAccessor, root);
     pnanovdb_readaccessor_t distanceAccessor;
     pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+    pnanovdb_readaccessor_t qCriterionAccessor;
+    pnanovdb_readaccessor_init(qCriterionAccessor, qCriterionRoot);
 
     float3 p0 = worldPosition + lightDirection * firstOffset;
     float3              p1 = worldPosition + lightDirection * secondOffset;
-    VolumeDensitySample s0 = sampleDensityWorld( p0, length(p0 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, false);
-    VolumeDensitySample s1 = sampleDensityWorld( p1, length(p1 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, false);
+    VolumeDensitySample s0 = sampleDensityWorld( p0, length(p0 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, qCriterionAccessor, rng, false);
+    VolumeDensitySample s1 = sampleDensityWorld( p1, length(p1 - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, qCriterionAccessor, rng, false);
 
     float summedDensity = s0.density * firstSegment + s1.density * secondSegment;
     summedDensity += sampleShadowSummedDensity(worldPosition + lightDirection * secondLimit);
@@ -395,6 +435,7 @@ float3 estimateLightTransmittance(
     pnanovdb_root_handle_t root,
     pnanovdb_grid_handle_t distanceGrid,
     pnanovdb_root_handle_t distanceRoot,
+    pnanovdb_root_handle_t qCriterionRoot,
     uint stepBudget,
     inout uint rng)
 {
@@ -414,11 +455,13 @@ float3 estimateLightTransmittance(
     pnanovdb_readaccessor_init(densityAccessor, root);
     pnanovdb_readaccessor_t distanceAccessor;
     pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+    pnanovdb_readaccessor_t qCriterionAccessor;
+    pnanovdb_readaccessor_init(qCriterionAccessor, qCriterionRoot);
 
     [loop]
     for (uint i = 0u; i < steps && t < t1; ++i) {
         float3 samplePosition = worldPosition + lightDirection * t;
-        VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, false);
+        VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, qCriterionAccessor, rng, false);
         optical += sample.density * (absorption + scattering) * dt;
         t += dt;
     }
@@ -472,6 +515,7 @@ float3 renderRaymarchSample(
     pnanovdb_root_handle_t root,
     pnanovdb_grid_handle_t distanceGrid,
     pnanovdb_root_handle_t distanceRoot,
+    pnanovdb_root_handle_t qCriterionRoot,
     inout uint rng)
 {
     float t0;
@@ -491,6 +535,8 @@ float3 renderRaymarchSample(
     pnanovdb_readaccessor_init(densityAccessor, root);
     pnanovdb_readaccessor_t distanceAccessor;
     pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+    pnanovdb_readaccessor_t qCriterionAccessor;
+    pnanovdb_readaccessor_init(qCriterionAccessor, qCriterionRoot);
     float densityCellSize = densityGridCellWorldSize(grid);
 
     [loop]
@@ -505,10 +551,10 @@ float3 renderRaymarchSample(
         if (!skipLighting) {
             float sampleT = t + dt * rand01(rng);
             float3 samplePosition = rayOrigin + rayDirection * sampleT;
-            VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, true);
+            VolumeDensitySample sample = sampleDensityWorld(samplePosition, length(samplePosition - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, qCriterionAccessor, rng, true);
             if (sample.density > 0.0f) {
                 float3 sigmaT = max(absorption + scattering, float3(0.0f, 0.0f, 0.0f));
-                float3 lightTr = estimateCachedLightTransmittance(samplePosition, grid, root, distanceGrid, distanceRoot, rng);
+                float3 lightTr = estimateCachedLightTransmittance(samplePosition, grid, root, distanceGrid, distanceRoot, qCriterionRoot, rng);
                 float phaseCosine = dot(lightDirection, rayDirection);
                 float phase = evalPhase(phaseCosine);
                 float3 scatterBase = throughput * scattering * sample.density * dt;
@@ -534,6 +580,7 @@ bool sampleVolPathEvent(
     pnanovdb_root_handle_t root,
     pnanovdb_grid_handle_t distanceGrid,
     pnanovdb_root_handle_t distanceRoot,
+    pnanovdb_root_handle_t qCriterionRoot,
     inout uint rng,
     inout float3 throughput,
     out float3 position)
@@ -554,6 +601,8 @@ bool sampleVolPathEvent(
     pnanovdb_readaccessor_init(densityAccessor, root);
     pnanovdb_readaccessor_t distanceAccessor;
     pnanovdb_readaccessor_init(distanceAccessor, distanceRoot);
+    pnanovdb_readaccessor_t qCriterionAccessor;
+    pnanovdb_readaccessor_init(qCriterionAccessor, qCriterionRoot);
 
     // Volpathmis-style null-collision tracking: sample free flights from a scalar
     // majorant, classify sampled points as null or real medium events, and carry
@@ -566,7 +615,7 @@ bool sampleVolPathEvent(
         }
 
         position = rayOrigin + rayDirection * t;
-        VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, rng, true);
+        VolumeDensitySample sample = sampleDensityWorld(position, length(position - cameraPosition), grid, densityAccessor, distanceGrid, distanceAccessor, qCriterionAccessor, rng, true);
         float3 localSigmaT = sample.density * sigmaT;
         float realProb = saturate(max3(localSigmaT) / majorant);
 
@@ -594,6 +643,7 @@ float3 renderPathTraceSample(
     pnanovdb_root_handle_t root,
     pnanovdb_grid_handle_t distanceGrid,
     pnanovdb_root_handle_t distanceRoot,
+    pnanovdb_root_handle_t qCriterionRoot,
     inout uint rng)
 {
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
@@ -602,14 +652,14 @@ float3 renderPathTraceSample(
     [loop]
     for (uint bounce = 0u; bounce < max(1u, pathMaxBounces); ++bounce) {
         float3 position;
-        if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, distanceGrid, distanceRoot, rng, throughput, position)) {
+        if (!sampleVolPathEvent(rayOrigin, rayDirection, grid, root, distanceGrid, distanceRoot, qCriterionRoot, rng, throughput, position)) {
             break;
         }
 
         // Directional-light next-event estimate. With a single delta directional
         // light, the light-sampling MIS branch from volpathmis degenerates to
         // weight 1; phase-sampled paths cannot hit this light by solid angle.
-        float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, 48u, rng);
+        float3 lightTr = estimateLightTransmittance(position, grid, root, distanceGrid, distanceRoot, qCriterionRoot, 48u, rng);
         float phase = evalPhase(dot(lightDirection, rayDirection));
         radiance += throughput * lightColor * lightTr * phase;
 
@@ -688,9 +738,11 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
     uint seed = hashUint(pixel.x + pixel.y * imageWidth + frameIndex * 9781u + 0x9e3779b9u);
     pnanovdb_grid_handle_t grid;
     pnanovdb_grid_handle_t distanceGrid;
-    grid.address = distanceGrid.address = pnanovdb_address_null();
+    pnanovdb_grid_handle_t qCriterionGrid;
+    grid.address = distanceGrid.address = qCriterionGrid.address = pnanovdb_address_null();
     pnanovdb_root_handle_t root = gridRoot(grid);
     pnanovdb_root_handle_t distanceRoot = distanceGridRoot(distanceGrid);
+    pnanovdb_root_handle_t qCriterionRoot = qCriterionGridRoot(qCriterionGrid);
 
     float3 rayDirection = makeCameraRay(pixel, seed);
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
@@ -706,9 +758,9 @@ void renderVolume(uint3 dispatchThreadId : SV_DispatchThreadID)
     } else {
 #endif
     if (rendererMode == 0u) {
-        color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, seed);
+        color = renderRaymarchSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, qCriterionRoot, seed);
     } else {
-        color = renderPathTraceSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, seed);
+        color = renderPathTraceSample(cameraPosition, rayDirection, grid, root, distanceGrid, distanceRoot, qCriterionRoot, seed);
     }
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     if (debugViewMode == 1u) {

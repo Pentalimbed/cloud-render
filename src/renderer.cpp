@@ -496,6 +496,16 @@ void createShadowVolumeTexture(D3DState& d3d)
 void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 {
     createNanoVdbBuffer(d3d.device.Get(), volume.handle, d3d.volumeBuffer, d3d.volumeSrv, "density");
+    d3d.qCriterionBuffer.Reset();
+    d3d.qCriterionSrv.Reset();
+    if (volume.hasQCriterion) {
+        createNanoVdbBuffer(
+            d3d.device.Get(),
+            volume.qCriterionHandle,
+            d3d.qCriterionBuffer,
+            d3d.qCriterionSrv,
+            "q_criterion");
+    }
     createNanoVdbBuffer(
         d3d.device.Get(),
         volume.signedDistanceHandle,
@@ -507,7 +517,7 @@ void createVolumeBuffers(D3DState& d3d, const Volume& volume)
 
 void unbindComputeResources(ID3D11DeviceContext* context)
 {
-    std::array<ID3D11ShaderResourceView*, 8> nullSrvs = {};
+    std::array<ID3D11ShaderResourceView*, 9> nullSrvs = {};
     std::array<ID3D11UnorderedAccessView*, 5> nullUavs = {};
     std::array<ID3D11SamplerState*, 2> nullSamplers = {};
     context->CSSetShaderResources(0, static_cast<UINT>(nullSrvs.size()), nullSrvs.data());
@@ -817,6 +827,10 @@ RenderConstants makeConstants(
     c.cloudPhaseAlpha = c.phaseFunctionMode == 2u ? cloudPhase.alpha : std::max(settings.cloudPhaseAlpha, 0.0f);
     c.cloudPhaseWeight = cloudPhase.weightD;
     c.nubisDetailType = std::clamp(settings.nubisDetailType, 0.0f, 1.0f);
+    c.qCriterionClipMin = std::min(settings.qCriterionClipMin, settings.qCriterionClipMax - 1.0e-6f);
+    c.qCriterionClipMax = std::max(settings.qCriterionClipMax, c.qCriterionClipMin + 1.0e-6f);
+    c.qCriterionBias = std::clamp(settings.qCriterionBias, -1.0f, 1.0f);
+    c.hasQCriterion = volume.hasQCriterion ? 1u : 0u;
     c.nubisNoiseScale = std::max(settings.nubisNoiseScale, 1.0e-3f);
     c.maxDistanceToZero = std::max(settings.maxDistanceToZero, 1.0e-4f);
     c.msAttenuationScale = std::max(settings.msAttenuationScale, 0.0f);
@@ -837,7 +851,7 @@ RenderConstants makeConstants(
 void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
 {
     if (!d3d.volumeSrv || !d3d.signedDistanceSrv || !d3d.coarseSignedDistanceSrv || !d3d.shadowVolumeSrv || !d3d.shadowVolumeUav
-        || !d3d.nubisNoiseSrv || !d3d.wrapSampler || !d3d.clampSampler) {
+        || !d3d.nubisNoiseSrv || !d3d.wrapSampler || !d3d.clampSampler || (constants.hasQCriterion != 0u && !d3d.qCriterionSrv)) {
         clearBackbuffer(d3d);
         return;
     }
@@ -856,6 +870,7 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         nullptr,
         nullptr,
         nullptr,
+        d3d.qCriterionSrv ? d3d.qCriterionSrv.Get() : d3d.volumeSrv.Get(),
     };
     ID3D11UnorderedAccessView* shadowUpdateUavs[] = {
         nullptr,
@@ -865,7 +880,7 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         d3d.shadowVolumeUav.Get(),
     };
     d3d.context->CSSetShader(d3d.shaders.updateShadowVolume.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 8, shadowUpdateSrvs);
+    d3d.context->CSSetShaderResources(0, 9, shadowUpdateSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 5, shadowUpdateUavs, nullptr);
     dispatchShadowVolume(d3d.context.Get());
     unbindComputeResources(d3d.context.Get());
@@ -880,11 +895,12 @@ void dispatchRenderer(D3DState& d3d, const RenderConstants& constants)
         d3d.nubisNoiseSrv.Get(),
         d3d.coarseSignedDistanceSrv.Get(),
         d3d.shadowVolumeSrv.Get(),
+        d3d.qCriterionSrv ? d3d.qCriterionSrv.Get() : d3d.volumeSrv.Get(),
     };
     ID3D11UnorderedAccessView* renderUavs[] = {d3d.renderTexture.uav.Get(), nullptr, nullptr, nullptr, nullptr};
     ID3D11SamplerState* renderSamplers[] = {d3d.wrapSampler.Get(), d3d.clampSampler.Get()};
     d3d.context->CSSetShader(d3d.shaders.render.Get(), nullptr, 0);
-    d3d.context->CSSetShaderResources(0, 8, renderSrvs);
+    d3d.context->CSSetShaderResources(0, 9, renderSrvs);
     d3d.context->CSSetUnorderedAccessViews(0, 5, renderUavs, nullptr);
     d3d.context->CSSetSamplers(0, 2, renderSamplers);
     dispatch2D(d3d.context.Get(), d3d.width, d3d.height);

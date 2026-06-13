@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -54,6 +55,22 @@ struct SignedDistanceGrids {
     openvdb::FloatGrid::Ptr fullGrid;
     float maxDistanceToZero = 0.0f;
 };
+
+struct QCriterionStats {
+    float minValue = 0.0f;
+    float maxValue = 0.0f;
+    float absMax = 0.0f;
+};
+
+bool isDensityGridName(std::string_view name)
+{
+    return name == "cloud_density" || name == "density";
+}
+
+bool isQCriterionGridName(std::string_view name)
+{
+    return name == "q_criterion";
+}
 
 template <typename GridT>
 Vec3 toVec3(const GridT& v)
@@ -153,6 +170,29 @@ float maxActiveDensity(const openvdb::FloatGrid& grid)
         }
     }
     return hasValue ? maxDensity : 0.0f;
+}
+
+QCriterionStats activeValueStats(const openvdb::FloatGrid& grid)
+{
+    bool hasValue = false;
+    QCriterionStats stats;
+    for (openvdb::FloatGrid::ValueOnCIter iter = grid.cbeginValueOn(); iter; ++iter) {
+        const float value = iter.getValue();
+        if (!std::isfinite(value)) {
+            continue;
+        }
+
+        if (!hasValue) {
+            stats.minValue = value;
+            stats.maxValue = value;
+            hasValue = true;
+        } else {
+            stats.minValue = std::min(stats.minValue, value);
+            stats.maxValue = std::max(stats.maxValue, value);
+        }
+        stats.absMax = std::max(stats.absMax, std::abs(value));
+    }
+    return stats;
 }
 
 DenseBounds makeDenseBounds(const openvdb::CoordBBox& activeBBox, int padding = 0)
@@ -439,6 +479,16 @@ void applyVolumePlacement(openvdb::FloatGrid& grid, Volume& volume, const openvd
     volume.nativeUpAxis = placement.nativeUpAxis;
 }
 
+void applyVolumePlacement(openvdb::FloatGrid& grid, const Matrix4& nativeToRender)
+{
+    if (!grid.transform().isLinear()) {
+        throw std::runtime_error("Selected VDB companion grid must have a linear transform");
+    }
+
+    const auto oldIndexToNative = grid.transform().baseMap()->getAffineMap()->getMat4();
+    grid.setTransform(openvdb::math::Transform::createLinearTransform(oldIndexToNative * toOpenVdbMatrix(nativeToRender)));
+}
+
 void createNanoVolumeHandles(openvdb::FloatGrid& grid, Volume& volume, const openvdb::CoordBBox& activeBBox)
 {
     volume.handle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(grid);
@@ -453,6 +503,21 @@ void createNanoVolumeHandles(openvdb::FloatGrid& grid, Volume& volume, const ope
     if (!volume.signedDistanceHandle.grid<float>()) {
         throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float signed-distance grid");
     }
+}
+
+void createQCriterionHandle(openvdb::FloatGrid& grid, Volume& volume)
+{
+    volume.qCriterionHandle = nanovdb::tools::createNanoGrid<openvdb::FloatGrid, float>(grid);
+    if (!volume.qCriterionHandle.grid<float>()) {
+        throw std::runtime_error("OpenVDB to NanoVDB conversion did not produce a float q_criterion grid");
+    }
+
+    const QCriterionStats stats = activeValueStats(grid);
+    volume.qCriterionMin = stats.minValue;
+    volume.qCriterionMax = stats.maxValue;
+    volume.qCriterionAbsMax = stats.absMax;
+    volume.hasQCriterion = true;
+    volume.qCriterionGridName = grid.getName();
 }
 
 Volume loadNvdb(const std::filesystem::path& path)
@@ -490,14 +555,49 @@ Volume loadVdb(const std::filesystem::path& path)
     openvdb::io::File file(path.string());
     file.open();
 
+    std::vector<std::string> gridNames;
+    std::string preferredDensityName;
+    std::string qCriterionName;
+    for (openvdb::io::File::NameIterator iter = file.beginName(); iter != file.endName(); ++iter) {
+        const std::string gridName = iter.gridName();
+        gridNames.push_back(gridName);
+        if (preferredDensityName.empty() && isDensityGridName(gridName)) {
+            preferredDensityName = gridName;
+        } else if (qCriterionName.empty() && isQCriterionGridName(gridName)) {
+            qCriterionName = gridName;
+        }
+    }
+
     openvdb::GridBase::Ptr selectedBase;
     std::string selectedName;
-    for (openvdb::io::File::NameIterator iter = file.beginName(); iter != file.endName(); ++iter) {
-        openvdb::GridBase::Ptr base = file.readGrid(iter.gridName());
+    if (!preferredDensityName.empty()) {
+        openvdb::GridBase::Ptr base = file.readGrid(preferredDensityName);
         if (base && base->isType<openvdb::FloatGrid>()) {
-            selectedBase = std::move(base);
-            selectedName = iter.gridName();
-            break;
+            selectedBase = base;
+            selectedName = preferredDensityName;
+        }
+    }
+
+    if (!selectedBase) {
+        for (const std::string& gridName : gridNames) {
+            if (isQCriterionGridName(gridName)) {
+                continue;
+            }
+
+            openvdb::GridBase::Ptr base = file.readGrid(gridName);
+            if (base && base->isType<openvdb::FloatGrid>()) {
+                selectedBase = base;
+                selectedName = gridName;
+                break;
+            }
+        }
+    }
+
+    openvdb::GridBase::Ptr qCriterionBase;
+    if (!qCriterionName.empty()) {
+        openvdb::GridBase::Ptr base = file.readGrid(qCriterionName);
+        if (base && base->isType<openvdb::FloatGrid>()) {
+            qCriterionBase = base;
         }
     }
     file.close();
@@ -520,6 +620,20 @@ Volume loadVdb(const std::filesystem::path& path)
     applyVolumePlacement(*grid, volume, activeBBox);
     createNanoVolumeHandles(*grid, volume, activeBBox);
     volume.gridName = selectedName;
+
+    if (qCriterionBase) {
+        auto qCriterionGrid = openvdb::gridPtrCast<openvdb::FloatGrid>(qCriterionBase);
+        if (qCriterionGrid->getGridClass() == openvdb::GRID_UNKNOWN) {
+            qCriterionGrid->setGridClass(openvdb::GRID_FOG_VOLUME);
+        }
+
+        const Bounds nativeWorldBounds = {volume.nativeWorldMin, volume.nativeWorldMax};
+        const VolumePlacement placement = makeVolumePlacement(nativeWorldBounds);
+        applyVolumePlacement(*qCriterionGrid, placement.nativeToRender);
+        qCriterionGrid->setName(qCriterionName);
+        createQCriterionHandle(*qCriterionGrid, volume);
+    }
+
     return volume;
 }
 

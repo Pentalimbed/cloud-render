@@ -50,12 +50,12 @@ cbuffer RenderConstants : register(b0)
     float cloudPhaseWeight;
 
     float nubisDetailType;
-    float nubisNoiseScale;
-    float maxDistanceToZero;
-    float msAttenuationScale;
+    float qCriterionClipMin;
+    float qCriterionClipMax;
+    float qCriterionBias;
 
     float3 ambientLightColor;
-    float ambientPad;
+    uint hasQCriterion;
 
     uint shadowUpdateFrame;
     uint shadowUpdateFrames;
@@ -63,9 +63,9 @@ cbuffer RenderConstants : register(b0)
     float shadowLocalSampleOffset0;
 
     float shadowLocalSampleOffset1;
-    float shadowPad0;
-    float shadowPad1;
-    float shadowPad2;
+    float maxDistanceToZero;
+    float msAttenuationScale;
+    float nubisNoiseScale;
 
 #if CLOUD_RENDER_ENABLE_DEBUG_VIZ
     uint debugViewMode;
@@ -87,6 +87,7 @@ StructuredBuffer<uint> gDistanceNanoVdb : register(t4);
 Texture3D<float4> gNubisNoise : register(t5);
 Texture3D<float> gCoarseSignedDistance : register(t6);
 Texture3D<float> gShadowSummedDensity : register(t7);
+StructuredBuffer<uint> gQCriterionNanoVdb : register(t8);
 
 SamplerState gWrapSampler : register(s0);
 SamplerState gClampSampler : register(s1);

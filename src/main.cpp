@@ -83,15 +83,22 @@ bool loadVolumeIntoRenderer(
         setVolume(d3d, loadedVolume);
         currentVolume = std::move(loadedVolume);
         settings.maxDistanceToZero = currentVolume->maxDistanceToZero;
+        if (currentVolume->hasQCriterion) {
+            settings.qCriterionClipMin = currentVolume->qCriterionMin;
+            settings.qCriterionClipMax = std::max(currentVolume->qCriterionMax, settings.qCriterionClipMin + 1.0e-6f);
+        }
         camera = makeInitialCamera(currentVolume->worldMin, currentVolume->worldMax);
         volumeUi.status = "Loaded " + path.string();
         volumeUi.statusIsError = false;
 
         std::cout << "Loaded " << path << " grid=" << currentVolume->gridName << " bytes=" << currentVolume->handle.size()
+                  << " q_criterion=" << (currentVolume->hasQCriterion ? currentVolume->qCriterionGridName : std::string("<none>"))
+                  << " q_bytes=" << (currentVolume->hasQCriterion ? currentVolume->qCriterionHandle.size() : 0u)
                   << " sdf_bytes=" << currentVolume->signedDistanceHandle.size()
                   << " coarse_sdf=" << currentVolume->coarseSignedDistance.size[0] << "x" << currentVolume->coarseSignedDistance.size[1]
                   << "x" << currentVolume->coarseSignedDistance.size[2]
                   << " max_distance_to_zero=" << currentVolume->maxDistanceToZero
+                  << " q_range=(" << currentVolume->qCriterionMin << "," << currentVolume->qCriterionMax << ")"
                   << " native_up=+" << axisName(currentVolume->nativeUpAxis) << "\n";
         return true;
     } catch (const std::exception& e) {
@@ -244,10 +251,13 @@ void runCheck(const std::filesystem::path& volumePath)
     Volume volume = loadVolume(volumePath);
     checkShaders(executableDirectory() / "shaders");
     std::cout << "OK: " << volumePath << " grid=" << volume.gridName << " nanovdb_bytes=" << volume.handle.size()
+              << " q_criterion=" << (volume.hasQCriterion ? volume.qCriterionGridName : std::string("<none>"))
+              << " q_nanovdb_bytes=" << (volume.hasQCriterion ? volume.qCriterionHandle.size() : 0u)
               << " sdf_nanovdb_bytes=" << volume.signedDistanceHandle.size()
               << " coarse_sdf=" << volume.coarseSignedDistance.size[0] << "x" << volume.coarseSignedDistance.size[1]
               << "x" << volume.coarseSignedDistance.size[2]
               << " max_distance_to_zero=" << volume.maxDistanceToZero
+              << " q_range=(" << volume.qCriterionMin << "," << volume.qCriterionMax << ")"
               << " native_up=+" << axisName(volume.nativeUpAxis)
               << " render_bounds_min=(" << volume.worldMin.x << "," << volume.worldMin.y << "," << volume.worldMin.z << ")"
               << " render_bounds_max=(" << volume.worldMax.x << "," << volume.worldMax.y << "," << volume.worldMax.z << ")\n";
